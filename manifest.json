@@ -1,0 +1,40 @@
+{
+  "manifest_version": 2,
+  "name": "SkipMute for Twitch",
+  "version": "0.2.0",
+  "description": "Skips Twitch VOD sections muted by Twitch Audio Recognition with undo and manual re-skip controls.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "storage",
+    "https://www.twitch.tv/*",
+    "https://gql.twitch.tv/*",
+    "https://api.twitch.tv/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.twitch.tv/videos/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true,
+    "browser_style": false
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "twitch-vod-muted-skipper@example.local",
+      "data_collection_permissions": {
+        "required": ["browsingActivity"]
+      }
+    }
+  }
+}

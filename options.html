@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SkipMute for Twitch</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <img src="icons/icon-48.png" width="48" height="48" alt="">
+        <div>
+          <h1>SkipMute for Twitch</h1>
+          <p>Automatically skip muted Twitch VOD sections, then undo or re-skip from the player controls.</p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Player Behavior</h2>
+          <p>These settings affect the inline Twitch player control.</p>
+        </div>
+
+        <label class="switch-row">
+          <span>
+            <strong>Auto-skip muted segments</strong>
+            <small>Jump to the end when playback enters a detected muted VOD section.</small>
+          </span>
+          <input id="enabled" type="checkbox">
+        </label>
+
+        <label class="number-row">
+          <span>
+            <strong>Skip padding</strong>
+            <small>Seconds added after the muted section ends.</small>
+          </span>
+          <input id="skipPaddingSeconds" type="number" min="0" max="5" step="0.05">
+        </label>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Detection Sources</h2>
+          <p>Exact metadata is preferred. Timeline markers are used automatically when metadata is unavailable.</p>
+        </div>
+
+        <label class="switch-row">
+          <span>
+            <strong>Twitch web metadata</strong>
+            <small>Best-effort metadata lookup from Twitch's web endpoint.</small>
+          </span>
+          <input id="useGraphql" type="checkbox">
+        </label>
+
+        <label class="switch-row">
+          <span>
+            <strong>Silence fallback</strong>
+            <small>Experimental. Uses audio silence when no metadata or timeline markers are found.</small>
+          </span>
+          <input id="useSilenceFallback" type="checkbox">
+        </label>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Official Twitch API</h2>
+          <p>Optional. Use your own Twitch developer app credentials for the most stable metadata source.</p>
+        </div>
+
+        <label class="field">
+          <span>Client ID</span>
+          <input id="helixClientId" type="text" autocomplete="off" spellcheck="false" placeholder="Optional">
+        </label>
+
+        <label class="field">
+          <span>OAuth bearer token</span>
+          <input id="helixToken" type="password" autocomplete="off" spellcheck="false" placeholder="Optional">
+        </label>
+      </section>
+
+      <details class="panel">
+        <summary>Advanced silence fallback tuning</summary>
+        <div class="advanced-grid">
+          <label class="field">
+            <span>Silence confirmation seconds</span>
+            <input id="silenceConfirmSeconds" type="number" min="1" max="20" step="0.5">
+          </label>
+          <label class="field">
+            <span>Silence threshold</span>
+            <input id="silenceThreshold" type="number" min="0.001" max="0.05" step="0.001">
+          </label>
+          <label class="field">
+            <span>Fallback seek step seconds</span>
+            <input id="fallbackSeekStepSeconds" type="number" min="2" max="60" step="1">
+          </label>
+        </div>
+      </details>
+
+      <footer class="footer">
+        <button id="reset" type="button">Reset defaults</button>
+        <p id="status" role="status"></p>
+      </footer>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
