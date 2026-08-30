@@ -1,6 +1,6 @@
 {
   "name": "twitch-vod-muted-skipper",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Browser extension that skips muted sections in Twitch VODs.",
   "engines": {
