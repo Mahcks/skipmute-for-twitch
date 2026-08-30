@@ -22,6 +22,7 @@ for (const file of files) copyFileSync(join(root, file), join(out, file));
 cpSync(join(root, "icons"), join(out, "icons"), { recursive: true });
 copyFileSync(join(root, target === "chrome" ? "manifest.chrome.json" : "manifest.json"), join(out, "manifest.json"));
 
+// Use tools shipped with the operating system so packaging needs no npm dependencies.
 const result = process.platform === "win32"
   ? spawnSync(
       "powershell",

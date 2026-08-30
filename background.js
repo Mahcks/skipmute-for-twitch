@@ -1,5 +1,6 @@
 const browserApi = globalThis.browser ?? globalThis.chrome;
 
+// Load optional official metadata without exposing credentials to the page script.
 async function loadMutedSegments(videoId) {
   if (!/^\d+$/.test(String(videoId))) return { ok: false, error: "invalid VOD ID" };
 
@@ -42,12 +43,14 @@ function storageGet(storage, defaults) {
 
 function handleMessage(message, _sender, sendResponse) {
   if (message?.type !== "tvms-load-muted-segments") return;
+  // Returning true keeps Chrome's callback channel open for the async request.
   loadMutedSegments(message.videoId).then(sendResponse, () => {
     sendResponse({ ok: false, error: "official API unavailable" });
   });
   return true;
 }
 
+// Tests opt into these hooks instead of registering a browser listener.
 if (globalThis.__TVMS_TEST__) {
   Object.assign(globalThis.__TVMS_TEST__, { loadMutedSegments, handleMessage });
 } else {

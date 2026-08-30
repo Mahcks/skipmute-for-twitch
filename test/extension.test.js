@@ -6,6 +6,7 @@ const vm = require("node:vm");
 
 const root = path.resolve(__dirname, "..");
 
+// Extension scripts expose test hooks when this object exists before evaluation.
 function loadContent() {
   let now = 1000;
   let sample = 255;
@@ -103,6 +104,8 @@ function setPlaybackState(api, video, source, segments) {
     audio: null
   });
 }
+
+// Content script
 
 test("normalizes segments and clamps persisted settings", () => {
   const { api } = loadContent();
@@ -202,6 +205,8 @@ test("parses Twitch timeline markers positioned with logical CSS properties", ()
   const segment = api.segmentFromMarkerStyles(marker);
   assert.equal(JSON.stringify(segment), JSON.stringify({ offset: 75, duration: 20, end: 95 }));
 });
+
+// Options page
 
 test("options reject empty and out-of-range numeric values", () => {
   const context = { __TVMS_TEST__: {}, browser: {}, console };
@@ -325,6 +330,8 @@ test("reset waits for a focused field save and removes the token", async () => {
   assert.equal(elements.status.textContent, "Defaults restored");
 });
 
+// Background worker
+
 test("background validates VOD IDs and enforces optional Firefox token consent", async () => {
   let allowed = false;
   let clientId = "";
@@ -369,6 +376,8 @@ test("background validates VOD IDs and enforces optional Firefox token consent",
   assert.equal(response.ok, true);
   assert.equal(context.__TVMS_TEST__.handleMessage({ type: "other" }, null, () => {}), undefined);
 });
+
+// Release package invariants
 
 test("release manifests and assets stay aligned", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));

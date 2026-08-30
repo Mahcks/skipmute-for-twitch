@@ -11,6 +11,8 @@ const fields = Object.keys(DEFAULT_SETTINGS);
 let lastStatusTimer = null;
 let pendingSave = Promise.resolve();
 
+// Form lifecycle
+
 async function init() {
   const status = document.getElementById("status");
 
@@ -19,6 +21,7 @@ async function init() {
     if (!input) continue;
 
     input.addEventListener("change", () => {
+      // Serialize writes so Reset cannot race a focused field's change event.
       pendingSave = pendingSave.then(async () => {
         const value = coerceValue(input, DEFAULT_SETTINGS[field]);
         if (value == null) {
@@ -65,6 +68,8 @@ async function init() {
   }
 }
 
+// Validation and persistence
+
 function populateSettings(settings) {
   for (const field of fields) {
     const input = document.getElementById(field);
@@ -95,6 +100,7 @@ async function loadSettings() {
     storageGet(browserApi.storage.local, { helixToken: "" })
   ]);
 
+  // Older releases synced the token; migrate it to device-local storage once.
   if (synced.helixToken) {
     if (!local.helixToken) await storageSet(browserApi.storage.local, { helixToken: synced.helixToken });
     await storageRemove(browserApi.storage.sync, "helixToken");
@@ -107,6 +113,7 @@ async function saveSettings(values) {
   const synced = {};
   const local = {};
   for (const [key, value] of Object.entries(values)) {
+    // Credentials stay on this device while ordinary preferences can sync.
     (key === "helixToken" ? local : synced)[key] = value;
   }
   const removeToken = local.helixToken === "";
@@ -120,6 +127,8 @@ async function saveSettings(values) {
   ]);
   if ("helixToken" in values) await storageRemove(browserApi.storage.sync, "helixToken");
 }
+
+// Firefox data-collection consent
 
 async function ensureAuthenticationPermission(token) {
   if (!token || (await hasAuthenticationPermission())) return true;
@@ -157,6 +166,7 @@ function showStatus(status, message, isError = false) {
   }, 2400);
 }
 
+// Firefox uses promises; older Chrome extension APIs use callbacks.
 function storageGet(storage, defaults) {
   const result = storage.get(defaults);
   if (result?.then) return result;
@@ -175,6 +185,7 @@ function storageRemove(storage, keys) {
   return new Promise((resolve) => storage.remove(keys, resolve));
 }
 
+// Tests opt into these hooks before evaluating the options script.
 if (globalThis.__TVMS_TEST__) {
   Object.assign(globalThis.__TVMS_TEST__, {
     init,

@@ -28,6 +28,8 @@
     timelineMuteStartedAt: null
   };
 
+  // Page lifecycle and settings
+
   async function init() {
     try {
       state.settings = await loadSettings();
@@ -89,6 +91,7 @@
 
   function watchUrlChanges() {
     let previous = location.href;
+    // Twitch swaps VODs with client-side navigation, so page-load events are not enough.
     setInterval(() => {
       if (location.href === previous) return;
       previous = location.href;
@@ -131,6 +134,7 @@
     renderOverlay();
 
     const result = await loadMutedSegments(videoId);
+    // Ignore metadata that finished loading after the user moved to another VOD.
     if (state.videoId !== videoId || state.hydrationId !== hydrationId) return;
 
     state.segments = normalizeSegments(result.segments);
@@ -141,6 +145,8 @@
     }
     renderOverlay();
   }
+
+  // Segment loading and playback loop
 
   async function loadMutedSegments(videoId) {
     try {
@@ -187,6 +193,7 @@
     }
 
     const nearTimelineSegment = getNearbyTimelineSegment(current);
+    // Timeline colors are heuristic; sustained local silence prevents false skips.
     if (nearTimelineSegment && isPlaybackSilent()) {
       if (isIgnoredSegment(nearTimelineSegment)) return;
       state.timelineMuteStartedAt ??= performance.now();
@@ -197,8 +204,9 @@
     } else {
       state.timelineMuteStartedAt = null;
     }
-
   }
+
+  // Twitch timeline marker detection
 
   function refreshSegmentsFromTimeline() {
     const now = Date.now();
@@ -265,6 +273,7 @@
   }
 
   function segmentFromMarkerElement(element, videoRect) {
+    // Percentage styles still work while Twitch has hidden or collapsed the controls.
     const styleSegment = segmentFromMarkerStyles(element);
     if (styleSegment) return styleSegment;
 
@@ -286,6 +295,7 @@
 
   function segmentFromMarkerStyles(element) {
     const style = getComputedStyle(element);
+    // Twitch currently positions markers with logical CSS; left remains a fallback.
     const leftRatio = readPercentRatio(element.style.insetInlineStart || element.style.left || style.insetInlineStart || style.left);
     const rawWidthRatio = readPercentRatio(element.style.width || style.width);
     const widthRatio = rawWidthRatio == null || leftRatio == null ? null : Math.min(rawWidthRatio, 1 - leftRatio);
@@ -349,6 +359,7 @@
 
     for (const segment of sorted) {
       const previous = merged[merged.length - 1];
+      // Keep short rendering seams inside one muted range without swallowing audible gaps.
       if (!previous || segment.offset > previous.end + 0.25) {
         merged.push({ ...segment });
       } else {
@@ -359,6 +370,8 @@
 
     return merged;
   }
+
+  // Playback control and Undo
 
   function skipTo(targetTime, segment = null) {
     const from = state.video.currentTime;
@@ -383,6 +396,7 @@
     const seekId = ++state.seekId;
     const retryIfOverwritten = () => {
       if (state.seekId !== seekId || state.video !== video || state.videoId !== videoId) return;
+      // Twitch can finish an older seek after Undo; only correct that known stale destination.
       if (Math.abs(video.currentTime - targetTime) > 1 && Math.abs(video.currentTime - staleTime) < 3) {
         video.currentTime = targetTime;
       }
@@ -417,6 +431,7 @@
         const analyser = context.createAnalyser();
         analyser.fftSize = 1024;
         source.connect(analyser);
+        // The analyser must stay in the playback graph or the VOD would become silent.
         analyser.connect(context.destination);
         state.audio = {
           context,
@@ -439,6 +454,7 @@
       }
       return Math.sqrt(sum / state.audio.samples.length);
     } catch {
+      // Audio verification fails closed: uncertain audio never triggers a timeline skip.
       return null;
     }
   }
@@ -473,6 +489,8 @@
     state.lastSkip = null;
     renderOverlay();
   }
+
+  // Twitch player controls
 
   function createOverlay() {
     if (document.getElementById("tvms-root")) return;
@@ -519,6 +537,7 @@
   }
 
   function attachOverlayToPlayer() {
+    // Twitch frequently rebuilds the player DOM, so the control must be reattached safely.
     if (!document.getElementById("tvms-root")) createOverlay();
     const root = document.getElementById("tvms-root");
     if (!root) return;
@@ -638,6 +657,7 @@
       actionState.enabled ? actionState.label : "none"
     ].join("|");
 
+    // tick() runs twice a second; avoid rewriting an unchanged Twitch control tree.
     if (renderSignature === state.lastRenderSignature) return;
     state.lastRenderSignature = renderSignature;
 
@@ -760,6 +780,8 @@
     event.stopPropagation();
   }
 
+  // Undo guardrails
+
   function isIgnoredSegment(segment) {
     if (state.ignoredSegmentRanges.length === 0) return false;
 
@@ -817,6 +839,8 @@
     state.ignoredSegmentRanges = mergeSegments(state.ignoredSegmentRanges).slice(-6);
   }
 
+  // Browser integration
+
   function refreshVideo() {
     const video = document.querySelector("video");
     if (video === state.video) return;
@@ -827,6 +851,7 @@
   }
 
   function storageGet(storage, defaults) {
+    // Firefox returns promises; older Chrome APIs use callbacks.
     const result = storage.get(defaults);
     if (result?.then) return result;
     return new Promise((resolve) => storage.get(defaults, resolve));
@@ -838,6 +863,7 @@
     return new Promise((resolve) => storage.set(values, resolve));
   }
 
+  // Tests opt into these hooks before evaluating the content script.
   if (globalThis.__TVMS_TEST__) {
     Object.assign(globalThis.__TVMS_TEST__, {
       state,

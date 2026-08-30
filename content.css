@@ -9,15 +9,6 @@
   --tvms-border: rgba(255, 255, 255, 0.12);
 }
 
-#tvms-root .tvms-toast {
-  pointer-events: auto;
-  background: rgba(15, 14, 19, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(8px);
-}
-
 #tvms-root .tvms-panel {
   display: inline-flex;
   align-items: center;
@@ -137,6 +128,12 @@
   align-items: center;
   margin-top: 8px;
   padding: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(15, 14, 19, 0.94);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
 }
 
 #tvms-root .tvms-toast-action[hidden] {
