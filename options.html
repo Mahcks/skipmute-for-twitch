@@ -35,37 +35,14 @@
             <strong>Skip padding</strong>
             <small>Seconds added after the muted section ends.</small>
           </span>
-          <input id="skipPaddingSeconds" type="number" min="0" max="5" step="0.05">
-        </label>
-      </section>
-
-      <section class="panel">
-        <div class="section-heading">
-          <h2>Detection Sources</h2>
-          <p>Exact metadata is preferred. Timeline markers are used automatically when metadata is unavailable.</p>
-        </div>
-
-        <label class="switch-row">
-          <span>
-            <strong>Twitch web metadata</strong>
-            <small>Best-effort metadata lookup from Twitch's web endpoint.</small>
-          </span>
-          <input id="useGraphql" type="checkbox">
-        </label>
-
-        <label class="switch-row">
-          <span>
-            <strong>Silence fallback</strong>
-            <small>Experimental. Uses audio silence when no metadata or timeline markers are found.</small>
-          </span>
-          <input id="useSilenceFallback" type="checkbox">
+          <input id="skipPaddingSeconds" type="number" min="0" max="5" step="0.05" required>
         </label>
       </section>
 
       <section class="panel">
         <div class="section-heading">
           <h2>Official Twitch API</h2>
-          <p>Optional. Use your own Twitch developer app credentials for the most stable metadata source.</p>
+          <p>Optional. Without credentials, SkipMute uses audio-confirmed markers from the Twitch timeline.</p>
         </div>
 
         <label class="field">
@@ -75,24 +52,18 @@
 
         <label class="field">
           <span>OAuth bearer token</span>
-          <input id="helixToken" type="password" autocomplete="off" spellcheck="false" placeholder="Optional">
+          <input id="helixToken" type="password" autocomplete="off" spellcheck="false" placeholder="Optional" aria-describedby="token-storage-note">
         </label>
+        <small id="token-storage-note">Stored only on this device. Firefox asks before the token and current VOD ID are sent to Twitch.</small>
       </section>
 
       <details class="panel">
-        <summary>Advanced silence fallback tuning</summary>
+        <summary>Timeline verification tuning</summary>
         <div class="advanced-grid">
           <label class="field">
-            <span>Silence confirmation seconds</span>
-            <input id="silenceConfirmSeconds" type="number" min="1" max="20" step="0.5">
-          </label>
-          <label class="field">
             <span>Silence threshold</span>
-            <input id="silenceThreshold" type="number" min="0.001" max="0.05" step="0.001">
-          </label>
-          <label class="field">
-            <span>Fallback seek step seconds</span>
-            <input id="fallbackSeekStepSeconds" type="number" min="2" max="60" step="1">
+            <small>Raise only if real muted markers are not being confirmed.</small>
+            <input id="silenceThreshold" type="number" min="0.001" max="0.05" step="0.001" required>
           </label>
         </div>
       </details>

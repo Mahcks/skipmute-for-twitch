@@ -3,9 +3,13 @@
   "version": "0.2.0",
   "private": true,
   "description": "Browser extension that skips muted sections in Twitch VODs.",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "check": "node --check content.js && node --check options.js",
-    "package:firefox": "powershell -ExecutionPolicy Bypass -File scripts/package.ps1 -Target firefox",
-    "package:chrome": "powershell -ExecutionPolicy Bypass -File scripts/package.ps1 -Target chrome"
+    "test": "node --test",
+    "check": "node --check background.js && node --check content.js && node --check options.js && node --check scripts/package.mjs && node --test",
+    "package:firefox": "node scripts/package.mjs firefox",
+    "package:chrome": "node scripts/package.mjs chrome"
   }
 }

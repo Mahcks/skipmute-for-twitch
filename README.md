@@ -2,6 +2,8 @@
 
 Browser extension for skipping Twitch VOD sections muted by Twitch Audio Recognition.
 
+Works while logged out with no Client ID, token, or setup. By default, muted ranges are read from Twitch's player timeline and verified against playback audio locally in the page.
+
 ## Features
 
 - Inline Twitch player control near the right-side player buttons.
@@ -9,14 +11,14 @@ Browser extension for skipping Twitch VOD sections muted by Twitch Audio Recogni
 - Progress badge showing muted segments passed over total muted segments.
 - Undo after every automatic skip.
 - Skip action after Undo so long muted sections can be re-skipped when the user is ready.
-- Metadata-first detection with timeline-marker fallback.
+- Zero-setup, audio-confirmed timeline-marker detection.
 - Optional official Twitch Helix API credentials.
-- Optional silence fallback for edge cases.
+- Automatic recovery when Twitch rebuilds its player controls.
 
 ## Browser Targets
 
-- Firefox: `manifest.json` uses Manifest V2. Mozilla continues to support MV2.
-- Chrome: `manifest.chrome.json` uses Manifest V3, which is required for Chrome publishing.
+- Firefox 142+ desktop: `manifest.json` uses Manifest V2 and Firefox's built-in data consent.
+- Chrome 99+: `manifest.chrome.json` uses Manifest V3, which is required for Chrome publishing.
 
 ## Local Testing
 
@@ -37,11 +39,14 @@ Browser extension for skipping Twitch VOD sections muted by Twitch Audio Recogni
 
 ## Packaging
 
-```powershell
+```sh
 npm run check
 npm run package:firefox
 npm run package:chrome
 ```
+
+Packaging requires Node.js 18+. It uses PowerShell on Windows and Python 3's standard library on macOS/Linux. No project dependencies are required.
+CI also validates the packaged Firefox extension with Mozilla's pinned `web-ext` linter.
 
 Outputs:
 
@@ -53,9 +58,9 @@ Outputs:
 The extension tries detection in this order:
 
 1. Official Twitch Helix API, if the user adds their own Client ID and OAuth bearer token.
-2. Twitch web metadata, best effort.
-3. Twitch player timeline markers, read from the red muted ranges in the seekbar.
-4. Optional silence fallback, disabled by default.
+2. Twitch player timeline markers, confirmed against the playing audio before SkipMute seeks.
+
+Detection-source and credential changes apply to the open VOD without a page reload. API failures appear in the player control's tooltip.
 
 ## Privacy
 
@@ -67,4 +72,5 @@ See [PRIVACY.md](PRIVACY.md). The extension does not collect analytics, run remo
 - Review permissions rationale in [STORE_LISTING.md](STORE_LISTING.md).
 - Run `npm run check`.
 - Package both browser builds.
-- Test on at least one VOD with visible red muted timeline markers.
+- Enter a VOD through Twitch's client-side navigation and confirm the control appears.
+- Test Skip, Undo, and Skip again on a VOD with visible red muted timeline markers.

@@ -2,10 +2,8 @@
 
 SkipMute for Twitch does not collect, sell, or store personal data on external servers controlled by the extension developer.
 
-The extension runs only on Twitch VOD pages. It reads the active VOD player state and muted segment metadata so it can skip muted sections. Settings are stored in the browser's extension storage.
+The extension loads on Twitch pages so it can follow Twitch's client-side navigation, but activates its control only on VOD pages. It reads the active VOD player state and muted timeline markers locally so it can skip muted sections. Settings are stored in the browser's extension storage. This default mode does not transmit data outside the browser.
 
-To load muted segment metadata, the extension may send the current Twitch VOD ID to Twitch endpoints. Mozilla classifies this as browsing activity because it is derived from the page the user is visiting.
-
-If you add optional Twitch Helix API credentials in the settings page, those values are stored locally in browser extension storage and are sent only to Twitch API endpoints when loading VOD metadata.
+If you add optional Twitch Helix API credentials in the settings page, the OAuth token is stored only in local browser extension storage. The token and current Twitch VOD ID are then sent only to Twitch API endpoints when loading VOD metadata. Other non-sensitive settings may use browser sync. Firefox asks for optional authentication-information and browsing-activity consent before these values are sent.
 
 The extension does not include analytics, advertising, remote code execution, or third-party tracking.

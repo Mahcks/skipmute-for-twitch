@@ -13,17 +13,19 @@
   "permissions": [
     "storage",
     "https://www.twitch.tv/*",
-    "https://gql.twitch.tv/*",
     "https://api.twitch.tv/*"
   ],
   "content_scripts": [
     {
-      "matches": ["https://www.twitch.tv/videos/*"],
+      "matches": ["https://www.twitch.tv/*"],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }
   ],
+  "background": {
+    "scripts": ["background.js"]
+  },
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true,
@@ -32,8 +34,10 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "twitch-vod-muted-skipper@example.local",
+      "strict_min_version": "142.0",
       "data_collection_permissions": {
-        "required": ["browsingActivity"]
+        "required": ["none"],
+        "optional": ["authenticationInfo", "browsingActivity"]
       }
     }
   }

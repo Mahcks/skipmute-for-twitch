@@ -1,15 +1,8 @@
 (() => {
-  const TWITCH_WEB_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
   const DEFAULT_SETTINGS = {
     enabled: true,
-    useGraphql: true,
-    useSilenceFallback: false,
-    helixClientId: "",
-    helixToken: "",
     skipPaddingSeconds: 0.35,
-    silenceConfirmSeconds: 3,
-    silenceThreshold: 0.004,
-    fallbackSeekStepSeconds: 8
+    silenceThreshold: 0.004
   };
 
   const browserApi = globalThis.browser ?? globalThis.chrome;
@@ -19,6 +12,7 @@
     video: null,
     segments: [],
     source: "none",
+    metadataError: null,
     lastSkip: null,
     ignoredSegmentRanges: [],
     manualWatchRange: null,
@@ -28,16 +22,17 @@
     lastRenderSignature: "",
     suppressUntil: 0,
     lastDomScanAt: 0,
+    hydrationId: 0,
     audio: null,
-    silenceStartedAt: null,
-    timelineMuteStartedAt: null,
-    fallbackSkipping: false
+    timelineMuteStartedAt: null
   };
 
-  init();
-
   async function init() {
-    state.settings = await loadSettings();
+    try {
+      state.settings = await loadSettings();
+    } catch {
+      state.metadataError = "settings unavailable";
+    }
     createOverlay();
     attachOverlayToPlayer();
     watchUrlChanges();
@@ -46,21 +41,45 @@
     void hydrateForCurrentPage();
 
     browserApi.storage.onChanged?.addListener((changes, area) => {
-      if (area !== "sync") return;
+      if (area !== "sync" && area !== "local") return;
+      let reloadMetadata = false;
       for (const [key, change] of Object.entries(changes)) {
-        state.settings[key] = change.newValue ?? DEFAULT_SETTINGS[key];
+        if (area === "sync" && key in DEFAULT_SETTINGS) {
+          state.settings[key] = change.newValue ?? DEFAULT_SETTINGS[key];
+        }
+        reloadMetadata ||= (area === "sync" && key === "helixClientId") ||
+          (area === "local" && (key === "helixToken" || key === "helixCredentialRevision"));
       }
+      state.settings = normalizeSettings(state.settings);
       renderOverlay();
+      if (reloadMetadata) void hydrateForCurrentPage(true);
     });
   }
 
-  function loadSettings() {
-    return storageGet(DEFAULT_SETTINGS).then((items) => ({ ...DEFAULT_SETTINGS, ...items }));
+  async function loadSettings() {
+    return normalizeSettings(await storageGet(browserApi.storage.sync, DEFAULT_SETTINGS));
   }
 
   function saveSetting(key, value) {
     state.settings[key] = value;
-    void storageSet({ [key]: value });
+    void storageSet(browserApi.storage.sync, { [key]: value }).catch(() => {
+      showToast("Setting could not be saved", null);
+    });
+  }
+
+  function normalizeSettings(settings) {
+    return {
+      ...DEFAULT_SETTINGS,
+      ...settings,
+      enabled: Boolean(settings.enabled),
+      skipPaddingSeconds: clampNumber(settings.skipPaddingSeconds, 0, 5, DEFAULT_SETTINGS.skipPaddingSeconds),
+      silenceThreshold: clampNumber(settings.silenceThreshold, 0.001, 0.05, DEFAULT_SETTINGS.silenceThreshold)
+    };
+  }
+
+  function clampNumber(value, min, max, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? clamp(number, min, max) : fallback;
   }
 
   function getVideoIdFromUrl() {
@@ -76,34 +95,46 @@
     }, 700);
   }
 
-  async function hydrateForCurrentPage() {
+  async function hydrateForCurrentPage(force = false) {
     const videoId = getVideoIdFromUrl();
-    state.video = document.querySelector("video");
+    const hydrationId = ++state.hydrationId;
+    refreshVideo();
 
     if (!videoId) {
+      hideToast();
       state.videoId = null;
       state.segments = [];
       state.source = "none";
+      state.metadataError = null;
+      state.lastSkip = null;
+      state.manualWatchRange = null;
+      state.manualSkipAction = null;
+      state.suppressUntil = 0;
       renderOverlay();
       return;
     }
 
-    if (videoId === state.videoId && state.segments.length) return;
+    if (!force && videoId === state.videoId && state.segments.length) return;
+    hideToast();
     state.videoId = videoId;
     state.segments = [];
     state.source = "loading";
+    state.metadataError = null;
     state.lastSkip = null;
     state.ignoredSegmentRanges = [];
     state.manualWatchRange = null;
     state.manualSkipAction = null;
-    state.silenceStartedAt = null;
+    state.suppressUntil = 0;
+    state.timelineMuteStartedAt = null;
+    state.lastDomScanAt = 0;
     renderOverlay();
 
     const result = await loadMutedSegments(videoId);
-    if (state.videoId !== videoId) return;
+    if (state.videoId !== videoId || state.hydrationId !== hydrationId) return;
 
     state.segments = normalizeSegments(result.segments);
     state.source = result.source;
+    state.metadataError = result.error ?? null;
     if (state.segments.length === 0) {
       refreshSegmentsFromTimeline();
     }
@@ -111,75 +142,11 @@
   }
 
   async function loadMutedSegments(videoId) {
-    const helix = await fetchHelixSegments(videoId);
-    if (helix.ok) return helix;
-
-    if (state.settings.useGraphql) {
-      const graphql = await fetchGraphqlSegments(videoId);
-      if (graphql.ok) return graphql;
-    }
-
-    return { ok: true, source: "none", segments: [] };
-  }
-
-  async function fetchHelixSegments(videoId) {
-    const clientId = state.settings.helixClientId.trim();
-    const token = state.settings.helixToken.trim().replace(/^Bearer\s+/i, "");
-    if (!clientId || !token) return { ok: false };
-
     try {
-      const response = await fetch(`https://api.twitch.tv/helix/videos?id=${encodeURIComponent(videoId)}`, {
-        headers: {
-          "Client-Id": clientId,
-          Authorization: `Bearer ${token}`
-        }
-      });
-      if (!response.ok) return { ok: false };
-      const payload = await response.json();
-      const video = payload?.data?.[0];
-      return {
-        ok: true,
-        source: "helix",
-        segments: video?.muted_segments ?? []
-      };
+      const result = await browserApi.runtime.sendMessage({ type: "tvms-load-muted-segments", videoId });
+      return result?.ok ? result : { ok: true, source: "none", segments: [], error: result?.error ?? null };
     } catch {
-      return { ok: false };
-    }
-  }
-
-  async function fetchGraphqlSegments(videoId) {
-    try {
-      const response = await fetch("https://gql.twitch.tv/gql", {
-        method: "POST",
-        headers: {
-          "Client-Id": TWITCH_WEB_CLIENT_ID,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          operationName: "TvmsVideoMutedSegments",
-          variables: { videoID: videoId },
-          query: `
-            query TvmsVideoMutedSegments($videoID: ID!) {
-              video(id: $videoID) {
-                id
-                lengthSeconds
-                mutedSegments {
-                  offset
-                  duration
-                }
-              }
-            }
-          `
-        })
-      });
-      if (!response.ok) return { ok: false };
-      const payload = await response.json();
-      if (payload?.errors?.length) return { ok: false };
-      const segments = payload?.data?.video?.mutedSegments;
-      if (!Array.isArray(segments)) return { ok: false };
-      return { ok: true, source: "graphql", segments };
-    } catch {
-      return { ok: false };
+      return { ok: true, source: "none", segments: [], error: "official API unavailable" };
     }
   }
 
@@ -196,8 +163,7 @@
 
   function tick() {
     if (!state.video || !document.contains(state.video)) {
-      state.video = document.querySelector("video");
-      state.audio = null;
+      refreshVideo();
     }
 
     if (!state.videoId || !state.video) return;
@@ -213,9 +179,9 @@
     if (isInManualWatchWindow(current)) return;
     clearIgnoredSegmentIfNeeded(current);
     const segment = state.segments.find((item) => current >= item.offset && current < item.end);
-    if (segment) {
+    if (segment && state.source !== "timeline") {
       if (isIgnoredSegment(segment)) return;
-      skipTo(segment.end + state.settings.skipPaddingSeconds, segment.offset, "metadata", segment);
+      skipTo(segment.end + state.settings.skipPaddingSeconds, segment);
       return;
     }
 
@@ -224,21 +190,13 @@
       if (isIgnoredSegment(nearTimelineSegment)) return;
       state.timelineMuteStartedAt ??= performance.now();
       if ((performance.now() - state.timelineMuteStartedAt) / 1000 >= 1.5) {
-        skipTo(
-          nearTimelineSegment.end + state.settings.skipPaddingSeconds,
-          nearTimelineSegment.offset,
-          "timeline",
-          nearTimelineSegment
-        );
+        skipTo(nearTimelineSegment.end + state.settings.skipPaddingSeconds, nearTimelineSegment);
         return;
       }
     } else {
       state.timelineMuteStartedAt = null;
     }
 
-    if (state.segments.length === 0 && state.settings.useSilenceFallback) {
-      void maybeFallbackSkip();
-    }
   }
 
   function refreshSegmentsFromTimeline() {
@@ -266,12 +224,13 @@
         if (!(element instanceof HTMLElement)) return false;
         if (element.closest("#tvms-root")) return false;
 
+        const style = getComputedStyle(element);
+        if (!isMutedMarkerColor(style.backgroundColor) && !isMutedMarkerColor(style.borderColor)) return false;
+        if (segmentFromMarkerStyles(element)) return true;
+
         const rect = element.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2 || rect.width > window.innerWidth) return false;
-        if (!isNearPlayerControls(rect, videoRect)) return false;
-
-        const style = getComputedStyle(element);
-        return isMutedMarkerColor(style.backgroundColor) || isMutedMarkerColor(style.borderColor);
+        return isNearPlayerControls(rect, videoRect);
       })
       .map((element) => segmentFromMarkerElement(element, videoRect))
       .filter(Boolean);
@@ -325,8 +284,10 @@
   }
 
   function segmentFromMarkerStyles(element) {
-    const leftRatio = readPercentRatio(element.style.left || getComputedStyle(element).left);
-    const widthRatio = readPercentRatio(element.style.width || getComputedStyle(element).width);
+    const style = getComputedStyle(element);
+    const leftRatio = readPercentRatio(element.style.insetInlineStart || element.style.left || style.insetInlineStart || style.left);
+    const rawWidthRatio = readPercentRatio(element.style.width || style.width);
+    const widthRatio = rawWidthRatio == null || leftRatio == null ? null : Math.min(rawWidthRatio, 1 - leftRatio);
     if (leftRatio == null || widthRatio == null || widthRatio <= 0) return null;
 
     const duration = widthRatio * state.video.duration;
@@ -387,7 +348,7 @@
 
     for (const segment of sorted) {
       const previous = merged[merged.length - 1];
-      if (!previous || segment.offset > previous.end + 1) {
+      if (!previous || segment.offset > previous.end + 0.25) {
         merged.push({ ...segment });
       } else {
         previous.end = Math.max(previous.end, segment.end);
@@ -398,7 +359,7 @@
     return merged;
   }
 
-  function skipTo(targetTime, skippedFrom, reason, segment = null) {
+  function skipTo(targetTime, segment = null) {
     const from = state.video.currentTime;
     const duration = Number.isFinite(state.video.duration) ? state.video.duration : targetTime;
     const to = Math.min(targetTime, duration);
@@ -407,10 +368,9 @@
     state.lastSkip = {
       from,
       to,
-      originalSegmentStart: skippedFrom,
-      reason,
       ignoredRange: buildIgnoredRange(from, to, segment)
     };
+    state.timelineMuteStartedAt = null;
     state.video.currentTime = to;
     showToast(`Skipped ${formatTime(from)} to ${formatTime(to)}`, "undo");
     renderOverlay();
@@ -419,53 +379,15 @@
   function getNearbyTimelineSegment(currentTime) {
     if (state.source !== "timeline") return null;
 
-    const earlyWindowSeconds = Math.min(300, Math.max(45, state.video.duration * 0.03));
     return state.segments.find((segment) => {
-      return currentTime >= segment.offset - earlyWindowSeconds && currentTime < segment.end;
+      return currentTime >= segment.offset && currentTime < segment.end;
     });
   }
 
   function isPlaybackSilent() {
-    if (state.video.muted || state.video.volume === 0) return true;
-
     const level = getAudioLevel();
     if (level == null) return false;
     return level <= state.settings.silenceThreshold;
-  }
-
-  async function maybeFallbackSkip() {
-    if (state.fallbackSkipping) return;
-
-    const level = getAudioLevel();
-    if (level == null) return;
-
-    if (level > state.settings.silenceThreshold) {
-      state.silenceStartedAt = null;
-      return;
-    }
-
-    state.silenceStartedAt ??= performance.now();
-    const silentFor = (performance.now() - state.silenceStartedAt) / 1000;
-    if (silentFor < state.settings.silenceConfirmSeconds) return;
-
-    state.fallbackSkipping = true;
-    const startedAt = state.video.currentTime;
-    const step = Math.max(2, state.settings.fallbackSeekStepSeconds);
-
-    try {
-      for (let next = state.video.currentTime + step; next < state.video.duration; next += step) {
-        state.video.currentTime = next;
-        await wait(700);
-        const nextLevel = getAudioLevel();
-        if (nextLevel != null && nextLevel > state.settings.silenceThreshold) {
-          skipTo(next, startedAt, "silence");
-          return;
-        }
-      }
-    } finally {
-      state.silenceStartedAt = null;
-      state.fallbackSkipping = false;
-    }
   }
 
   function getAudioLevel() {
@@ -488,7 +410,9 @@
 
       if (state.audio.context.state === "suspended") {
         void state.audio.context.resume();
+        return null;
       }
+      if (state.audio.context.state !== "running") return null;
 
       state.audio.analyser.getByteTimeDomainData(state.audio.samples);
       let sum = 0;
@@ -510,10 +434,7 @@
       offset: Math.max(0, state.lastSkip.from - 5),
       end: state.lastSkip.to + 2
     };
-    state.manualSkipAction = {
-      to: state.lastSkip.to,
-      label: `Skip to ${formatTime(state.lastSkip.to)}`
-    };
+    state.manualSkipAction = { to: state.lastSkip.to };
     state.video.currentTime = Math.max(0, state.lastSkip.from - 0.25);
     showToast(`Returned to ${formatTime(state.video.currentTime)}`, "skip");
     state.lastSkip = null;
@@ -523,7 +444,7 @@
   function skipManualWatchRange() {
     if (!state.video || !state.manualSkipAction) return;
 
-    const to = Math.min(state.manualSkipAction.to + state.settings.skipPaddingSeconds, state.video.duration);
+    const to = Math.min(state.manualSkipAction.to, state.video.duration);
     if (Number.isFinite(to) && to > state.video.currentTime) {
       state.video.currentTime = to;
       showToast(`Skipped to ${formatTime(to)}`, null);
@@ -551,7 +472,7 @@
         <button type="button" class="tvms-action" title="Undo last skip" aria-label="Undo last skip">Undo</button>
       </div>
       <div class="tvms-toast">
-        <div class="tvms-toast-text"></div>
+        <div class="tvms-toast-text" role="status" aria-live="polite" aria-atomic="true"></div>
         <button type="button" class="tvms-toast-action">Undo</button>
       </div>
     `;
@@ -561,8 +482,8 @@
     const toastAction = root.querySelector(".tvms-toast-action");
 
     [toggle, action, toastAction].forEach((button) => {
-      button.addEventListener("pointerdown", stopControlEvent);
-      button.addEventListener("mousedown", stopControlEvent);
+      button.addEventListener("pointerdown", stopControlEventPropagation);
+      button.addEventListener("mousedown", stopControlEventPropagation);
     });
 
     toggle.addEventListener("click", (event) => {
@@ -574,14 +495,16 @@
     toastAction.addEventListener("click", handleToastActionClick);
 
     document.documentElement.append(root);
+    state.lastRenderSignature = "";
     renderOverlay();
   }
 
   function attachOverlayToPlayer() {
+    if (!document.getElementById("tvms-root")) createOverlay();
     const root = document.getElementById("tvms-root");
     if (!root) return;
 
-    const anchor = findPlayerControlAnchor();
+    const anchor = state.videoId ? findPlayerControlAnchor() : null;
     if (anchor?.row && anchor?.after) {
       if (root.parentElement !== anchor.row || root.previousElementSibling !== anchor.after) {
         anchor.after.insertAdjacentElement("afterend", root);
@@ -674,10 +597,9 @@
     const completedCount = getCompletedSegmentCount();
     const sourceLabel = {
       helix: "official API",
-      graphql: "Twitch metadata",
       timeline: "timeline markers",
       loading: "loading metadata",
-      none: state.settings.useSilenceFallback ? "silence fallback ready" : "no muted metadata"
+      none: state.metadataError ?? "no muted metadata"
     }[state.source] ?? state.source;
 
     const toggle = root.querySelector(".tvms-toggle");
@@ -691,6 +613,7 @@
       state.videoId ?? "",
       state.settings.enabled ? "1" : "0",
       state.source,
+      state.metadataError ?? "",
       completedCount,
       count,
       actionState.enabled ? actionState.label : "none"
@@ -734,6 +657,13 @@
     }, 9000);
   }
 
+  function hideToast() {
+    clearTimeout(state.lastToastTimer);
+    state.lastToastTimer = null;
+    state.toastAction = null;
+    document.querySelector("#tvms-root .tvms-toast")?.classList.remove("tvms-visible");
+  }
+
   function formatTime(totalSeconds) {
     const value = Math.max(0, Math.floor(totalSeconds));
     const hours = Math.floor(value / 3600);
@@ -743,10 +673,6 @@
       return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
     }
     return `${minutes}:${String(seconds).padStart(2, "0")}`;
-  }
-
-  function wait(milliseconds) {
-    return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
   function clamp(value, min, max) {
@@ -811,6 +737,10 @@
     event.stopPropagation();
   }
 
+  function stopControlEventPropagation(event) {
+    event.stopPropagation();
+  }
+
   function isIgnoredSegment(segment) {
     if (state.ignoredSegmentRanges.length === 0) return false;
 
@@ -837,6 +767,7 @@
 
     if (currentTime >= state.manualWatchRange.end) {
       state.manualWatchRange = null;
+      state.manualSkipAction = null;
     }
     return false;
   }
@@ -860,21 +791,48 @@
 
     const padded = {
       offset: Math.max(0, range.offset - 2),
-      end: range.end + 2
+      end: range.end + 2,
+      duration: range.end + 2 - Math.max(0, range.offset - 2)
     };
     state.ignoredSegmentRanges.push(padded);
     state.ignoredSegmentRanges = mergeSegments(state.ignoredSegmentRanges).slice(-6);
   }
 
-  function storageGet(defaults) {
-    const result = browserApi.storage.sync.get(defaults);
-    if (result?.then) return result;
-    return new Promise((resolve) => browserApi.storage.sync.get(defaults, resolve));
+  function refreshVideo() {
+    const video = document.querySelector("video");
+    if (video === state.video) return;
+
+    if (state.audio?.context.close) void state.audio.context.close().catch(() => {});
+    state.audio = null;
+    state.video = video;
   }
 
-  function storageSet(values) {
-    const result = browserApi.storage.sync.set(values);
+  function storageGet(storage, defaults) {
+    const result = storage.get(defaults);
     if (result?.then) return result;
-    return new Promise((resolve) => browserApi.storage.sync.set(values, resolve));
+    return new Promise((resolve) => storage.get(defaults, resolve));
+  }
+
+  function storageSet(storage, values) {
+    const result = storage.set(values);
+    if (result?.then) return result;
+    return new Promise((resolve) => storage.set(values, resolve));
+  }
+
+  if (globalThis.__TVMS_TEST__) {
+    Object.assign(globalThis.__TVMS_TEST__, {
+      state,
+      normalizeSettings,
+      normalizeSegments,
+      mergeSegments,
+      segmentFromMarkerStyles,
+      tick,
+      undoLastSkip,
+      skipManualWatchRange,
+      isInManualWatchWindow,
+      getActionState
+    });
+  } else {
+    void init();
   }
 })();
