@@ -1,0 +1,35 @@
+name: Publish Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Verify release version
+        run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+      - run: npm run check
+      - run: npm run package:firefox
+      - run: npm run package:chrome
+      - run: python3 -m zipfile -t dist/twitch-vod-muted-skipper-firefox.zip
+      - run: python3 -m zipfile -t dist/twitch-vod-muted-skipper-chrome.zip
+      - run: npx --yes web-ext@10.6.0 lint --source-dir dist/firefox --warnings-as-errors
+      - name: Attach browser packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/twitch-vod-muted-skipper-{firefox,chrome}.zip --clobber
+      - name: Submit Firefox update to AMO
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: npx --yes web-ext@10.6.0 sign --source-dir dist/firefox --channel listed --approval-timeout 0
