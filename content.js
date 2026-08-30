@@ -23,6 +23,7 @@
     suppressUntil: 0,
     lastDomScanAt: 0,
     hydrationId: 0,
+    seekId: 0,
     audio: null,
     timelineMuteStartedAt: null
   };
@@ -371,9 +372,25 @@
       ignoredRange: buildIgnoredRange(from, to, segment)
     };
     state.timelineMuteStartedAt = null;
-    state.video.currentTime = to;
+    seekVideo(to, from);
     showToast(`Skipped ${formatTime(from)} to ${formatTime(to)}`, "undo");
     renderOverlay();
+  }
+
+  function seekVideo(targetTime, staleTime) {
+    const video = state.video;
+    const videoId = state.videoId;
+    const seekId = ++state.seekId;
+    const retryIfOverwritten = () => {
+      if (state.seekId !== seekId || state.video !== video || state.videoId !== videoId) return;
+      if (Math.abs(video.currentTime - targetTime) > 1 && Math.abs(video.currentTime - staleTime) < 3) {
+        video.currentTime = targetTime;
+      }
+    };
+
+    video.addEventListener?.("seeked", retryIfOverwritten, { once: true });
+    video.currentTime = targetTime;
+    setTimeout(retryIfOverwritten, 750);
   }
 
   function getNearbyTimelineSegment(currentTime) {
@@ -435,8 +452,9 @@
       end: state.lastSkip.to + 2
     };
     state.manualSkipAction = { to: state.lastSkip.to };
-    state.video.currentTime = Math.max(0, state.lastSkip.from - 0.25);
-    showToast(`Returned to ${formatTime(state.video.currentTime)}`, "skip");
+    const to = Math.max(0, state.lastSkip.from - 0.25);
+    seekVideo(to, state.lastSkip.to);
+    showToast(`Returned to ${formatTime(to)}`, "skip");
     state.lastSkip = null;
     renderOverlay();
   }
@@ -446,7 +464,7 @@
 
     const to = Math.min(state.manualSkipAction.to, state.video.duration);
     if (Number.isFinite(to) && to > state.video.currentTime) {
-      state.video.currentTime = to;
+      seekVideo(to, state.video.currentTime);
       showToast(`Skipped to ${formatTime(to)}`, null);
     }
 
@@ -482,8 +500,9 @@
     const toastAction = root.querySelector(".tvms-toast-action");
 
     [toggle, action, toastAction].forEach((button) => {
-      button.addEventListener("pointerdown", stopControlEventPropagation);
-      button.addEventListener("mousedown", stopControlEventPropagation);
+      ["pointerdown", "mousedown", "pointerup", "mouseup"].forEach((eventName) => {
+        button.addEventListener(eventName, stopControlEventPropagation);
+      });
     });
 
     toggle.addEventListener("click", (event) => {

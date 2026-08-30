@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, "..");
 function loadContent() {
   let now = 1000;
   let sample = 255;
+  let timers = [];
 
   class AudioContextMock {
     constructor() {
@@ -62,7 +63,10 @@ function loadContent() {
     console,
     performance: { now: () => now },
     setInterval() {},
-    setTimeout() { return 1; }
+    setTimeout(callback) {
+      timers.push(callback);
+      return timers.length;
+    }
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(root, "content.js"), "utf8"), context);
@@ -73,6 +77,11 @@ function loadContent() {
     },
     setSample(value) {
       sample = value;
+    },
+    runTimeouts() {
+      const callbacks = timers;
+      timers = [];
+      callbacks.forEach((callback) => callback());
     }
   };
 }
@@ -121,7 +130,8 @@ test("normalizes segments and clamps persisted settings", () => {
 });
 
 test("metadata skip, Undo, and manual re-skip preserve the original destination", () => {
-  const { api } = loadContent();
+  const runtime = loadContent();
+  const { api } = runtime;
   const video = { currentTime: 10, duration: 100, paused: false, seeking: false, muted: false, volume: 1 };
   setPlaybackState(api, video, "helix", [{ offset: 5, duration: 15, end: 20 }]);
 
@@ -132,6 +142,11 @@ test("metadata skip, Undo, and manual re-skip preserve the original destination"
   api.undoLastSkip();
   assert.equal(video.currentTime, 9.75);
   assert.equal(api.state.ignoredSegmentRanges.length, 1);
+
+  video.currentTime = 20.35;
+  runtime.runTimeouts();
+  assert.equal(video.currentTime, 9.75);
+
   video.currentTime = 12;
   api.tick();
   assert.equal(video.currentTime, 12);
@@ -139,6 +154,8 @@ test("metadata skip, Undo, and manual re-skip preserve the original destination"
   api.skipManualWatchRange();
   assert.equal(video.currentTime, 20.35);
   assert.equal(api.state.manualSkipAction, null);
+  runtime.runTimeouts();
+  assert.equal(video.currentTime, 20.35);
 
   api.state.manualWatchRange = { offset: 0, end: 5 };
   api.state.manualSkipAction = { to: 10 };
