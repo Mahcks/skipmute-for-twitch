@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check background.js && node --check content.js && node --check options.js && node --check scripts/package.mjs && node --test",
+    "check": "node --check background.js && node --check content.js && node --check options.js && node --check scripts/package.mjs && node --check scripts/live-smoke.cjs && node --test",
     "package:firefox": "node scripts/package.mjs firefox",
     "package:chrome": "node scripts/package.mjs chrome"
   }

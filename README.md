@@ -2,8 +2,8 @@
 
 Browser extension for skipping Twitch VOD sections muted by Twitch Audio Recognition.
 
-[![Install from the Chrome Web Store](https://img.shields.io/badge/Chrome_Web_Store-Install-4285F4?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/skipmute-for-twitch/joigloedgnkomhlekekfopbbeanlkcnp)
-[![Install from Firefox Add-ons](https://img.shields.io/badge/Firefox_Add--ons-Install-FF7139?logo=firefoxbrowser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/skipmute-for-twitch/)
+[![Chrome](https://img.shields.io/badge/Chrome_Web_Store-Install-4285F4?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/skipmute-for-twitch/joigloedgnkomhlekekfopbbeanlkcnp)
+[![Firefox](https://img.shields.io/badge/Firefox_Add--ons-Install-FF7139?logo=firefoxbrowser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/skipmute-for-twitch/)
 
 ![SkipMute automatically skipping a muted Twitch VOD section with Undo available](store-assets/chrome/01-auto-skip-undo.png)
 
