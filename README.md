@@ -73,9 +73,12 @@ See [PRIVACY.md](PRIVACY.md). The extension does not collect analytics, run remo
 
 ## Publishing Checklist
 
-- Capture store screenshots listed in [STORE_LISTING.md](STORE_LISTING.md).
+- Update the version in `package.json`, `manifest.json`, and `manifest.chrome.json`.
+- Review the screenshots in `store-assets/chrome` and listing copy in [STORE_LISTING.md](STORE_LISTING.md).
 - Review permissions rationale in [STORE_LISTING.md](STORE_LISTING.md).
 - Run `npm run check`.
 - Package both browser builds.
 - Enter a VOD through Twitch's client-side navigation and confirm the control appears.
 - Test Skip, Undo, and Skip again on a VOD with visible red muted timeline markers.
+- Publish a GitHub release tagged `vX.Y.Z`; CI attaches both packages and submits Firefox to AMO.
+- Upload `dist/twitch-vod-muted-skipper-chrome.zip` to the Chrome Web Store.

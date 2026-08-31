@@ -29,6 +29,8 @@ Features:
 
 The extension activates its player control only on Twitch VOD pages. The optional OAuth token stays in local browser extension storage; non-sensitive settings may use browser sync.
 
+SkipMute for Twitch is not affiliated with or endorsed by Twitch.
+
 ## Permissions rationale
 
 - `storage`: saves user settings.
@@ -39,7 +41,7 @@ The extension activates its player control only on Twitch VOD pages. The optiona
 
 The Firefox manifest declares no required data transmission. It declares optional `authenticationInfo` and `browsingActivity` because, only when a user configures the Helix integration and grants consent, the extension sends the user-provided token and current VOD ID to Twitch. The extension developer does not receive or store this data.
 
-## Screenshots to capture before publishing
+## Store screenshots
 
 - Twitch VOD with the inline player control near Clip/settings.
 - Skip toast with Undo.

@@ -13,7 +13,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const dist = join(root, "dist");
 const out = join(dist, target);
 const zip = join(dist, `twitch-vod-muted-skipper-${target}.zip`);
-const files = ["background.js", "content.js", "content.css", "options.html", "options.css", "options.js", "README.md", "PRIVACY.md"];
+const files = ["background.js", "content.js", "content.css", "options.html", "options.css", "options.js", "LICENSE", "PRIVACY.md"];
 
 rmSync(out, { recursive: true, force: true });
 rmSync(zip, { force: true });
