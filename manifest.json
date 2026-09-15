@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "SkipMute for Twitch",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "description": "Skips Twitch VOD sections muted by Twitch Audio Recognition with undo and manual re-skip controls.",
   "icons": {
     "16": "icons/icon-16.png",
