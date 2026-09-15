@@ -55,6 +55,8 @@ npm run test:browser
 
 The browser suite uses generated media with known audible and silent intervals. Browser output is silenced without muting the audio being analyzed. It checks automatic skipping, Undo/re-skip, false marker rejection, user audio controls, and player/navigation recovery in Chromium and Firefox. It reports case counts and skip latency. These fixture results are regression checks, not a claim of universal Twitch accuracy.
 
+On headless Linux, Firefox needs a running audio server for Web Audio analysis. Both CI workflows start PulseAudio with a silent virtual output device before running browser tests.
+
 For the separate live Twitch playback check, package Chrome and run `node scripts/live-smoke.cjs`. Set `LIVE_SMOKE_VOD_URL` to another Twitch VOD with a muted interval if the default canary is removed. This check needs Twitch and its media servers to be reachable.
 
 ## Packaging

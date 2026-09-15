@@ -144,6 +144,14 @@ async function main() {
         result.skipLatencyMs.push(Date.now() - reusedStarted);
         result.expectedSkipCases++;
         assert.deepEqual(errors, [], `${name}: browser errors`);
+      } catch (error) {
+        console.error(JSON.stringify(await page.evaluate(() => {
+          const video = document.querySelector("video");
+          return { time: video?.currentTime, paused: video?.paused, seeking: video?.seeking,
+            readyState: video?.readyState, status: document.querySelector(".tvms-toggle")?.title,
+            seeks: window.seeks };
+        })));
+        throw error;
       } finally {
         console.log(JSON.stringify(result));
         await browser.close();

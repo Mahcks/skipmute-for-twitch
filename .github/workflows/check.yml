@@ -15,6 +15,13 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium firefox
       - run: npm run check
+      - name: Start silent audio device for Firefox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=skipmute_ci
+          echo "PULSE_SINK=skipmute_ci" >> "$GITHUB_ENV"
       - run: npm run test:browser
       - run: npm run package:firefox
       - run: npm run package:chrome
