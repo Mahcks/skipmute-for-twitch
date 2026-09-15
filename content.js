@@ -25,7 +25,11 @@
     hydrationId: 0,
     seekId: 0,
     audio: null,
-    timelineMuteStartedAt: null
+    timelineMuteStartedAt: null,
+    silenceSample: null,
+    audioStatus: null,
+    videoSrc: null,
+    videoSrcObject: null
   };
 
   // Page lifecycle and settings
@@ -39,6 +43,9 @@
     createOverlay();
     attachOverlayToPlayer();
     watchUrlChanges();
+    for (const type of ["pointerdown", "keydown"]) {
+      document.addEventListener(type, cancelSeekRecoveryOnInput, true);
+    }
     setInterval(tick, 500);
     setInterval(attachOverlayToPlayer, 2000);
     void hydrateForCurrentPage();
@@ -54,6 +61,7 @@
           (area === "local" && (key === "helixToken" || key === "helixCredentialRevision"));
       }
       state.settings = normalizeSettings(state.settings);
+      resetSilenceConfirmation();
       renderOverlay();
       if (reloadMetadata) void hydrateForCurrentPage(true);
     });
@@ -65,6 +73,7 @@
 
   function saveSetting(key, value) {
     state.settings[key] = value;
+    resetSilenceConfirmation();
     void storageSet(browserApi.storage.sync, { [key]: value }).catch(() => {
       showToast("Setting could not be saved", null);
     });
@@ -86,7 +95,7 @@
   }
 
   function getVideoIdFromUrl() {
-    return location.pathname.match(/^\/videos\/(\d+)/)?.[1] ?? null;
+    return location.pathname.match(/^\/videos\/(\d+)\/?$/)?.[1] ?? null;
   }
 
   function watchUrlChanges() {
@@ -101,10 +110,15 @@
 
   async function hydrateForCurrentPage(force = false) {
     const videoId = getVideoIdFromUrl();
-    const hydrationId = ++state.hydrationId;
     refreshVideo();
 
+    if (!force && videoId === state.videoId && state.segments.length) return;
+    const hydrationId = ++state.hydrationId;
+    state.seekId++;
+    if (videoId !== state.videoId) releaseAudio();
+
     if (!videoId) {
+      resetSilenceConfirmation();
       hideToast();
       state.videoId = null;
       state.segments = [];
@@ -118,7 +132,6 @@
       return;
     }
 
-    if (!force && videoId === state.videoId && state.segments.length) return;
     hideToast();
     state.videoId = videoId;
     state.segments = [];
@@ -129,18 +142,20 @@
     state.manualWatchRange = null;
     state.manualSkipAction = null;
     state.suppressUntil = 0;
-    state.timelineMuteStartedAt = null;
+    resetSilenceConfirmation();
     state.lastDomScanAt = 0;
     renderOverlay();
 
     const result = await loadMutedSegments(videoId);
     // Ignore metadata that finished loading after the user moved to another VOD.
-    if (state.videoId !== videoId || state.hydrationId !== hydrationId) return;
+    if (getVideoIdFromUrl() !== videoId || state.videoId !== videoId || state.hydrationId !== hydrationId) return;
 
+    resetSilenceConfirmation();
     state.segments = normalizeSegments(result.segments);
     state.source = result.source;
     state.metadataError = result.error ?? null;
     if (state.segments.length === 0) {
+      state.lastDomScanAt = 0;
       refreshSegmentsFromTimeline();
     }
     renderOverlay();
@@ -158,32 +173,40 @@
   }
 
   function normalizeSegments(segments) {
-    return (segments ?? [])
+    return (Array.isArray(segments) ? segments : [])
+      .filter((segment) => segment !== null && typeof segment === "object")
       .map((segment) => ({
         offset: Number(segment.offset),
         duration: Number(segment.duration),
         end: Number(segment.offset) + Number(segment.duration)
       }))
-      .filter((segment) => Number.isFinite(segment.offset) && Number.isFinite(segment.duration) && segment.duration > 0)
+      .filter((segment) => Number.isFinite(segment.offset) && segment.offset >= 0 &&
+        Number.isFinite(segment.duration) && segment.duration > 0 && Number.isFinite(segment.end))
       .sort((a, b) => a.offset - b.offset);
   }
 
   function tick() {
-    if (!state.video || !document.contains(state.video)) {
-      refreshVideo();
+    refreshVideo();
+    if (!isCurrentVideo()) {
+      resetSilenceConfirmation();
+      return;
     }
-
-    if (!state.videoId || !state.video) return;
     if (state.segments.length === 0 || state.source === "timeline") {
       refreshSegmentsFromTimeline();
     }
     renderOverlay();
 
-    if (!state.settings.enabled) return;
-    if (Date.now() < state.suppressUntil || state.video.paused || state.video.seeking) return;
+    if (!state.settings.enabled || Date.now() < state.suppressUntil || state.video.paused ||
+        state.video.seeking || state.video.readyState < 3) {
+      resetSilenceConfirmation();
+      return;
+    }
 
     const current = state.video.currentTime;
-    if (isInManualWatchWindow(current)) return;
+    if (isInManualWatchWindow(current)) {
+      resetSilenceConfirmation();
+      return;
+    }
     clearIgnoredSegmentIfNeeded(current);
     const segment = state.segments.find((item) => current >= item.offset && current < item.end);
     if (segment && state.source !== "timeline") {
@@ -192,18 +215,30 @@
       return;
     }
 
-    const nearTimelineSegment = getNearbyTimelineSegment(current);
-    // Timeline colors are heuristic; sustained local silence prevents false skips.
-    if (nearTimelineSegment && isPlaybackSilent()) {
-      if (isIgnoredSegment(nearTimelineSegment)) return;
-      state.timelineMuteStartedAt ??= performance.now();
-      if ((performance.now() - state.timelineMuteStartedAt) / 1000 >= 1.5) {
-        skipTo(nearTimelineSegment.end + state.settings.skipPaddingSeconds, nearTimelineSegment);
-        return;
-      }
-    } else {
-      state.timelineMuteStartedAt = null;
+    const segmentForAudio = getNearbyTimelineSegment(current);
+    if (!segmentForAudio || isIgnoredSegment(segmentForAudio) || !isPlaybackSilent()) {
+      resetSilenceConfirmation();
+      return;
     }
+    const now = performance.now();
+    const previous = state.silenceSample;
+    const elapsed = previous ? (now - previous.at) / 1000 : 0;
+    const progress = previous ? current - previous.time : 0;
+    const key = `${segmentForAudio.offset}:${segmentForAudio.end}`;
+    // Polling gaps, buffering, and scrubbing cannot count as observed silence.
+    if (!previous || previous.key !== key || elapsed <= 0 || elapsed > 1 || progress <= 0 ||
+        Math.abs(progress - elapsed * state.video.playbackRate) > 0.35) {
+      state.timelineMuteStartedAt = now;
+    }
+    state.silenceSample = { at: now, time: current, key };
+    if ((now - state.timelineMuteStartedAt) / 1000 >= 1.5) {
+      skipTo(segmentForAudio.end + state.settings.skipPaddingSeconds, segmentForAudio);
+    }
+  }
+
+  function resetSilenceConfirmation() {
+    state.timelineMuteStartedAt = null;
+    state.silenceSample = null;
   }
 
   // Twitch timeline marker detection
@@ -226,40 +261,24 @@
       return [];
     }
 
-    const videoRect = state.video.getBoundingClientRect();
     const scanRoot = getPlayerScanRoot();
-    const candidates = Array.from(scanRoot.querySelectorAll('[style*="background"], [style*="background-color"], [style*="left"], [style*="width"]'))
-      .filter((element) => {
-        if (!(element instanceof HTMLElement)) return false;
-        if (element.closest("#tvms-root")) return false;
-
+    const tracks = scanRoot.querySelectorAll('[data-a-target="player-seekbar"] .seekbar-bar');
+    const candidates = [];
+    for (const track of tracks) {
+      for (const element of track.querySelectorAll('[data-test-selector="seekbar-segment__segment"]')) {
         const style = getComputedStyle(element);
-        if (!isMutedMarkerColor(style.backgroundColor) && !isMutedMarkerColor(style.borderColor)) return false;
-        if (segmentFromMarkerStyles(element)) return true;
-
-        const rect = element.getBoundingClientRect();
-        if (rect.width < 2 || rect.height < 2 || rect.width > window.innerWidth) return false;
-        return isNearPlayerControls(rect, videoRect);
-      })
-      .map((element) => segmentFromMarkerElement(element, videoRect))
-      .filter(Boolean);
-
+        if (!isMutedMarkerColor(style.backgroundColor)) continue;
+        const segment = segmentFromMarkerStyles(element, track);
+        if (segment) candidates.push(segment);
+      }
+    }
     return mergeSegments(candidates);
   }
 
   function getPlayerScanRoot() {
-    return (
+    return state.video.closest('[data-a-target="video-player"], .video-player') ??
       state.video.closest('[data-a-target*="player"], [class*="player"], [class*="Player"]') ??
-      state.video.parentElement ??
-      document.body
-    );
-  }
-
-  function isNearPlayerControls(rect, videoRect) {
-    const overlapsVideoHorizontally = rect.right > videoRect.left && rect.left < videoRect.right;
-    const nearVideoBottom = rect.top >= videoRect.top && rect.bottom <= videoRect.bottom + 80;
-    const likelySeekbarHeight = rect.height <= 28;
-    return overlapsVideoHorizontally && nearVideoBottom && likelySeekbarHeight;
+      state.video.parentElement ?? document.body;
   }
 
   function isMutedMarkerColor(color) {
@@ -272,29 +291,22 @@
     return red >= 150 && green <= 95 && blue <= 125;
   }
 
-  function segmentFromMarkerElement(element, videoRect) {
-    // Percentage styles still work while Twitch has hidden or collapsed the controls.
-    const styleSegment = segmentFromMarkerStyles(element);
-    if (styleSegment) return styleSegment;
-
-    const markerRect = element.getBoundingClientRect();
-    const trackRect = findTimelineTrackRect(element, markerRect, videoRect);
-    if (!trackRect) return null;
-
-    const leftRatio = clamp((markerRect.left - trackRect.left) / trackRect.width, 0, 1);
-    const widthRatio = clamp(markerRect.width / trackRect.width, 0, 1 - leftRatio);
-    const duration = widthRatio * state.video.duration;
-    if (duration < 0.75) return null;
-
-    return {
-      offset: leftRatio * state.video.duration,
-      duration,
-      end: (leftRatio + widthRatio) * state.video.duration
-    };
-  }
-
-  function segmentFromMarkerStyles(element) {
+  function segmentFromMarkerStyles(element, track) {
+    if (!track || !track.contains(element)) return null;
+    if (getComputedStyle(track).position === "static") return null;
     const style = getComputedStyle(element);
+    if (style.position !== "absolute") return null;
+    // Percentages must refer to the seekbar, never a nested partial-width container.
+    let container = element.parentElement;
+    while (container && container !== track && getComputedStyle(container).position === "static") {
+      container = container.parentElement;
+    }
+    if (container !== track) {
+      const rect = container?.getBoundingClientRect();
+      const trackRect = track.getBoundingClientRect();
+      if (!rect || trackRect.width <= 0 || Math.abs(rect.left - trackRect.left) > 1 ||
+          Math.abs(rect.width - trackRect.width) > 1) return null;
+    }
     // Twitch currently positions markers with logical CSS; left remains a fallback.
     const leftRatio = readPercentRatio(element.style.insetInlineStart || element.style.left || style.insetInlineStart || style.left);
     const rawWidthRatio = readPercentRatio(element.style.width || style.width);
@@ -314,43 +326,8 @@
   function readPercentRatio(value) {
     const match = String(value).trim().match(/^(-?\d+(?:\.\d+)?)%$/);
     if (!match) return null;
-    return clamp(Number(match[1]) / 100, 0, 1);
-  }
-
-  function findTimelineTrackRect(element, markerRect, videoRect) {
-    let parent = element.parentElement;
-    let best = null;
-
-    while (parent && parent !== document.body) {
-      const rect = parent.getBoundingClientRect();
-      const containsMarker =
-        markerRect.left >= rect.left - 1 &&
-        markerRect.right <= rect.right + 1 &&
-        markerRect.top >= rect.top - 8 &&
-        markerRect.bottom <= rect.bottom + 8;
-
-      if (containsMarker && rect.width >= 160 && rect.width <= videoRect.width + 40 && rect.height <= 48) {
-        best = rect;
-      }
-
-      parent = parent.parentElement;
-    }
-
-    if (best) return best;
-
-    const fallbackTracks = Array.from(document.querySelectorAll('[data-a-target*="seek"], [data-a-target*="progress"]'))
-      .map((item) => item.getBoundingClientRect())
-      .filter((rect) => {
-        return (
-          rect.width >= 160 &&
-          rect.height <= 48 &&
-          markerRect.left >= rect.left - 1 &&
-          markerRect.right <= rect.right + 1
-        );
-      })
-      .sort((a, b) => a.height - b.height);
-
-    return fallbackTracks[0] ?? null;
+    const ratio = Number(match[1]) / 100;
+    return ratio >= 0 && ratio <= 1 ? ratio : null;
   }
 
   function mergeSegments(segments) {
@@ -374,6 +351,7 @@
   // Playback control and Undo
 
   function skipTo(targetTime, segment = null) {
+    if (!isCurrentVideo()) return;
     const from = state.video.currentTime;
     const duration = Number.isFinite(state.video.duration) ? state.video.duration : targetTime;
     const to = Math.min(targetTime, duration);
@@ -384,27 +362,46 @@
       to,
       ignoredRange: buildIgnoredRange(from, to, segment)
     };
-    state.timelineMuteStartedAt = null;
+    resetSilenceConfirmation();
     seekVideo(to, from);
     showToast(`Skipped ${formatTime(from)} to ${formatTime(to)}`, "undo");
     renderOverlay();
   }
 
-  function seekVideo(targetTime, staleTime) {
+  function isCurrentVideo() {
+    return Boolean(state.videoId && state.video && document.contains(state.video) &&
+      getVideoIdFromUrl() === state.videoId && (state.video.currentSrc ?? "") === state.videoSrc &&
+      (state.video.srcObject ?? null) === state.videoSrcObject);
+  }
+
+  function cancelSeekRecoveryOnInput(event) {
+    if (!event.isTrusted || event.target?.closest?.("#tvms-root")) return;
+    state.seekId++;
+    resetSilenceConfirmation();
+  }
+
+  function seekVideo(targetTime, staleTime, recoverUndo = false) {
+    if (!isCurrentVideo() || !Number.isFinite(targetTime)) return;
+    resetSilenceConfirmation();
     const video = state.video;
     const videoId = state.videoId;
+    const src = video.currentSrc;
+    const srcObject = video.srcObject;
     const seekId = ++state.seekId;
     const retryIfOverwritten = () => {
-      if (state.seekId !== seekId || state.video !== video || state.videoId !== videoId) return;
+      if (!isCurrentVideo() || state.seekId !== seekId || state.video !== video || state.videoId !== videoId ||
+          video.currentSrc !== src || video.srcObject !== srcObject) return;
       // Twitch can finish an older seek after Undo; only correct that known stale destination.
       if (Math.abs(video.currentTime - targetTime) > 1 && Math.abs(video.currentTime - staleTime) < 3) {
         video.currentTime = targetTime;
       }
     };
 
-    video.addEventListener?.("seeked", retryIfOverwritten, { once: true });
+    if (recoverUndo) {
+      video.addEventListener?.("seeked", retryIfOverwritten, { once: true });
+      setTimeout(retryIfOverwritten, 750);
+    }
     video.currentTime = targetTime;
-    setTimeout(retryIfOverwritten, 750);
   }
 
   function getNearbyTimelineSegment(currentTime) {
@@ -422,45 +419,64 @@
   }
 
   function getAudioLevel() {
+    if (state.video.muted || state.video.volume === 0) {
+      state.audioStatus = "audio verification paused: player muted";
+      return null;
+    }
     try {
-      if (!state.audio) {
-        const AudioContext = globalThis.AudioContext ?? globalThis.webkitAudioContext;
-        if (!AudioContext) return null;
-        const context = new AudioContext();
-        const source = context.createMediaElementSource(state.video);
-        const analyser = context.createAnalyser();
-        analyser.fftSize = 1024;
-        source.connect(analyser);
-        // The analyser must stay in the playback graph or the VOD would become silent.
-        analyser.connect(context.destination);
-        state.audio = {
-          context,
-          analyser,
-          samples: new Uint8Array(analyser.fftSize)
-        };
-      }
-
-      if (state.audio.context.state === "suspended") {
-        void state.audio.context.resume();
+      if (state.video.currentSrc && new URL(state.video.currentSrc, location.href).origin !== location.origin &&
+          state.video.crossOrigin == null) {
+        state.audioStatus = "audio verification unavailable for cross-origin media";
         return null;
       }
-      if (state.audio.context.state !== "running") return null;
-
-      state.audio.analyser.getByteTimeDomainData(state.audio.samples);
-      let sum = 0;
-      for (const sample of state.audio.samples) {
-        const centered = (sample - 128) / 128;
-        sum += centered * centered;
+      if (!state.audio) {
+        const AudioContext = globalThis.AudioContext ?? globalThis.webkitAudioContext;
+        const capture = state.video.captureStream ?? state.video.mozCaptureStream;
+        if (!AudioContext || !capture) {
+          state.audioStatus = "audio verification unavailable in this browser";
+          return null;
+        }
+        // Retain each resource immediately so partial setup failures can release it.
+        state.audio = { stream: capture.call(state.video), context: null, source: null, track: null };
+        state.audio.context = new AudioContext();
+        state.audio.analyser = state.audio.context.createAnalyser();
+        state.audio.analyser.fftSize = 1024;
+        state.audio.samples = new Float32Array(state.audio.analyser.fftSize);
       }
-      return Math.sqrt(sum / state.audio.samples.length);
+      const audio = state.audio;
+      if (audio.context.state !== "running") {
+        state.audioStatus = "audio verification waiting for playback permission";
+        if (audio.context.state === "suspended") void audio.context.resume().catch(() => {});
+        return null;
+      }
+      const track = audio.stream.getAudioTracks().find((item) => item.readyState === "live");
+      if (!track || track.muted || !track.enabled) {
+        state.audioStatus = "audio verification waiting for an audio track";
+        return null;
+      }
+      if (audio.track !== track) {
+        audio.source?.disconnect();
+        audio.source = audio.context.createMediaStreamSource(new MediaStream([track]));
+        audio.source.connect(audio.analyser);
+        audio.track = track;
+        // Capture observes source audio without rerouting or changing native playback.
+        state.audioStatus = "audio verification warming up";
+        return null;
+      }
+      audio.analyser.getFloatTimeDomainData(audio.samples);
+      let sum = 0;
+      for (const sample of audio.samples) sum += sample * sample;
+      state.audioStatus = null;
+      return Math.sqrt(sum / audio.samples.length);
     } catch {
-      // Audio verification fails closed: uncertain audio never triggers a timeline skip.
+      releaseAudio();
+      state.audioStatus = "audio verification unavailable";
       return null;
     }
   }
 
   function undoLastSkip() {
-    if (!state.lastSkip || !state.video) return;
+    if (!state.lastSkip || !isCurrentVideo()) return;
     state.suppressUntil = Date.now() + 5000;
     rememberIgnoredRange(state.lastSkip.ignoredRange);
     state.manualWatchRange = {
@@ -469,14 +485,14 @@
     };
     state.manualSkipAction = { to: state.lastSkip.to };
     const to = Math.max(0, state.lastSkip.from - 0.25);
-    seekVideo(to, state.lastSkip.to);
+    seekVideo(to, state.lastSkip.to, true);
     showToast(`Returned to ${formatTime(to)}`, "skip");
     state.lastSkip = null;
     renderOverlay();
   }
 
   function skipManualWatchRange() {
-    if (!state.video || !state.manualSkipAction) return;
+    if (!isCurrentVideo() || !state.manualSkipAction) return;
 
     const to = Math.min(state.manualSkipAction.to, state.video.duration);
     if (Number.isFinite(to) && to > state.video.currentTime) {
@@ -635,7 +651,7 @@
     const completedCount = getCompletedSegmentCount();
     const sourceLabel = {
       helix: "official API",
-      timeline: "timeline markers",
+      timeline: `timeline markers${state.audioStatus ? `; ${state.audioStatus}` : ""}`,
       loading: "loading metadata",
       none: state.metadataError ?? "no muted metadata"
     }[state.source] ?? state.source;
@@ -652,6 +668,7 @@
       state.settings.enabled ? "1" : "0",
       state.source,
       state.metadataError ?? "",
+      state.audioStatus ?? "",
       completedCount,
       count,
       actionState.enabled ? actionState.label : "none"
@@ -841,13 +858,42 @@
 
   // Browser integration
 
-  function refreshVideo() {
-    const video = document.querySelector("video");
-    if (video === state.video) return;
+  function handleMediaSourceChange() {
+    refreshVideo(true);
+  }
 
-    if (state.audio?.context.close) void state.audio.context.close().catch(() => {});
+  function releaseAudio() {
+    if (!state.audio) return;
+    state.audio.source?.disconnect();
+    for (const track of state.audio.stream.getTracks()) track.stop();
+    if (state.audio.context) void state.audio.context.close().catch(() => {});
     state.audio = null;
+  }
+
+  function refreshVideo(force = false) {
+    const video = document.querySelector("video");
+    const src = video?.currentSrc ?? "";
+    const srcObject = video?.srcObject ?? null;
+    if (!force && video === state.video && src === state.videoSrc && srcObject === state.videoSrcObject) return;
+    if (video !== state.video) {
+      for (const event of ["loadstart", "emptied"]) {
+        state.video?.removeEventListener?.(event, handleMediaSourceChange);
+        video?.addEventListener?.(event, handleMediaSourceChange);
+      }
+    }
+    state.seekId++;
+    resetSilenceConfirmation();
+    releaseAudio();
+    state.audioStatus = null;
     state.video = video;
+    state.videoSrc = src;
+    state.videoSrcObject = srcObject;
+    state.lastDomScanAt = 0;
+    if (state.source === "timeline") state.segments = [];
+    state.ignoredSegmentRanges = [];
+    state.lastSkip = null;
+    state.manualWatchRange = null;
+    state.manualSkipAction = null;
   }
 
   function storageGet(storage, defaults) {
@@ -867,6 +913,12 @@
   if (globalThis.__TVMS_TEST__) {
     Object.assign(globalThis.__TVMS_TEST__, {
       state,
+      cancelSeekRecoveryOnInput,
+      extractTimelineMutedSegments,
+      getAudioLevel,
+      getVideoIdFromUrl,
+      hydrateForCurrentPage,
+      refreshVideo,
       normalizeSettings,
       normalizeSegments,
       mergeSegments,

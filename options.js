@@ -10,15 +10,18 @@ const browserApi = globalThis.browser ?? globalThis.chrome;
 const fields = Object.keys(DEFAULT_SETTINGS);
 let lastStatusTimer = null;
 let pendingSave = Promise.resolve();
+let dataConsentSupported = false;
 
 // Form lifecycle
 
 async function init() {
   const status = document.getElementById("status");
+  const saveCredentials = document.getElementById("save-credentials");
+  saveCredentials.disabled = true;
 
   for (const field of fields) {
     const input = document.getElementById(field);
-    if (!input) continue;
+    if (!input || field === "helixClientId" || field === "helixToken") continue;
 
     input.addEventListener("change", () => {
       // Serialize writes so Reset cannot race a focused field's change event.
@@ -31,11 +34,6 @@ async function init() {
         }
 
         try {
-          if (field === "helixToken" && !(await ensureAuthenticationPermission(value))) {
-            input.value = "";
-            showStatus(status, "Token was not saved because permission was declined", true);
-            return;
-          }
           await saveSettings({ [field]: value });
           showStatus(status, "Saved");
         } catch {
@@ -44,6 +42,49 @@ async function init() {
       });
     });
   }
+
+  saveCredentials.addEventListener("click", () => {
+    const clientId = document.getElementById("helixClientId").value.trim();
+    const token = document.getElementById("helixToken").value.trim().replace(/^Bearer\s+/i, "");
+    if (token && !clientId) {
+      showStatus(status, "Enter a Client ID for this token", true);
+      return;
+    }
+    // Firefox requires request() in this synchronous click stack, before any await.
+    let permission;
+    try {
+      permission = Promise.resolve(ensureAuthenticationPermission(token));
+    } catch {
+      showStatus(status, "Could not request API data access; try again", true);
+      return;
+    }
+    // Attach rejection handling now, even if an earlier setting write is pending.
+    permission = permission.catch(() => false);
+    saveCredentials.disabled = true;
+    pendingSave = pendingSave.then(async () => {
+      try {
+        if (!(await permission)) {
+          showStatus(status, "API access was declined; credentials were not changed", true);
+          return;
+        }
+        if (token) {
+          showStatus(status, "Checking Twitch credentials…");
+          const result = await browserApi.runtime.sendMessage({ type: "tvms-validate-credentials", clientId, token });
+          if (!result?.ok) {
+            showStatus(status, `${result?.error ?? "Could not validate credentials; try again"}. Saved credentials were not changed.`, true);
+            return;
+          }
+        }
+        await saveSettings({ helixClientId: clientId, helixToken: token });
+        if (!token) await clearAuthenticationPermission();
+        showStatus(status, token ? "API credentials verified and saved" : "API token removed");
+      } catch {
+        showStatus(status, "Could not save API credentials; try again", true);
+      } finally {
+        saveCredentials.disabled = false;
+      }
+    });
+  });
 
   document.getElementById("reset").addEventListener("click", async () => {
     try {
@@ -59,9 +100,12 @@ async function init() {
 
   try {
     const settings = await loadSettings();
+    const permissions = browserApi.permissions?.getAll ? await browserApi.permissions.getAll() : {};
+    dataConsentSupported = Array.isArray(permissions.data_collection);
     populateSettings(settings);
+    saveCredentials.disabled = false;
     if (settings.helixToken && !(await hasAuthenticationPermission())) {
-      showStatus(status, "Firefox permission required: edit and save the token", true);
+      showStatus(status, "Firefox permission required: click Save API credentials", true);
     }
   } catch {
     showStatus(status, "Could not load saved settings", true);
@@ -95,21 +139,21 @@ function coerceValue(input, defaultValue) {
 }
 
 async function loadSettings() {
+  await migrateCredentials();
   const [synced, local] = await Promise.all([
     storageGet(browserApi.storage.sync, DEFAULT_SETTINGS),
     storageGet(browserApi.storage.local, { helixToken: "" })
   ]);
+  return { ...DEFAULT_SETTINGS, ...synced, helixToken: local.helixToken || "" };
+}
 
-  // Older releases synced the token; migrate it to device-local storage once.
-  if (synced.helixToken) {
-    if (!local.helixToken) await storageSet(browserApi.storage.local, { helixToken: synced.helixToken });
-    await storageRemove(browserApi.storage.sync, "helixToken");
-  }
-
-  return { ...DEFAULT_SETTINGS, ...synced, helixToken: local.helixToken || synced.helixToken || "" };
+async function migrateCredentials() {
+  const result = await browserApi.runtime.sendMessage({ type: "tvms-migrate-credentials" });
+  if (!result?.ok) throw new Error("Could not migrate saved credentials");
 }
 
 async function saveSettings(values) {
+  if ("helixToken" in values) await migrateCredentials();
   const synced = {};
   const local = {};
   for (const [key, value] of Object.entries(values)) {
@@ -130,8 +174,8 @@ async function saveSettings(values) {
 
 // Firefox data-collection consent
 
-async function ensureAuthenticationPermission(token) {
-  if (!token || (await hasAuthenticationPermission())) return true;
+function ensureAuthenticationPermission(token) {
+  if (!token || !dataConsentSupported) return true;
   return browserApi.permissions.request({ data_collection: ["authenticationInfo", "browsingActivity"] });
 }
 
@@ -160,6 +204,7 @@ function showStatus(status, message, isError = false) {
   clearTimeout(lastStatusTimer);
   status.textContent = message;
   status.classList.toggle("error", isError);
+  if (isError) return;
   lastStatusTimer = setTimeout(() => {
     status.textContent = "";
     status.classList.remove("error");

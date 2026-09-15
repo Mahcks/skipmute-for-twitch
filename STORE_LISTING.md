@@ -26,6 +26,9 @@ Features:
 - Provides Undo after every automatic skip.
 - After Undo, shows Skip so you can jump past that same muted section again when ready.
 - Includes a settings page for official API credentials and timeline verification tuning.
+- Verifies audio without rerouting the player's sound and explains when verification is unavailable.
+
+Timeline mode waits for confirmed silence inside a recognized muted marker. It does not automatically seek while playback is paused, buffering, or seeking, or when user mute or zero volume prevents confirmation. Optional API credentials are checked before saving, with clear errors for invalid tokens or mismatched Client IDs.
 
 The extension activates its player control only on Twitch VOD pages. The optional OAuth token stays in local browser extension storage; non-sensitive settings may use browser sync.
 
@@ -34,8 +37,10 @@ SkipMute for Twitch is not affiliated with or endorsed by Twitch.
 ## Permissions rationale
 
 - `storage`: saves user settings.
+- `alarms`: revalidates optional API credentials hourly while configured and permitted.
 - `https://www.twitch.tv/*`: reads Twitch VOD player state and injects the player control.
 - `https://api.twitch.tv/*`: optional official Twitch Helix metadata lookup when the user provides their own Twitch API credentials.
+- `https://id.twitch.tv/*`: validates the optional OAuth token during setup, startup, and scheduled checks.
 
 ## Firefox data collection disclosure
 

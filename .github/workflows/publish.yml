@@ -5,12 +5,18 @@ on:
     types: [published]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  build:
     if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -18,7 +24,10 @@ jobs:
           node-version: 24
       - name: Verify release version
         run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium firefox
       - run: npm run check
+      - run: npm run test:browser
       - run: npm run package:firefox
       - run: npm run package:chrome
       - run: python3 -m zipfile -t dist/twitch-vod-muted-skipper-firefox.zip
@@ -28,8 +37,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" dist/twitch-vod-muted-skipper-{firefox,chrome}.zip --clobber
+
+  stores:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, firefox]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Download verified release package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BROWSER: ${{ matrix.browser }}
+        run: gh release download "$GITHUB_REF_NAME" --pattern "twitch-vod-muted-skipper-${BROWSER}.zip" --dir dist
+      - name: Submit Chrome update
+        if: matrix.browser == 'chrome'
+        env:
+          CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID || secrets.CWS_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: joigloedgnkomhlekekfopbbeanlkcnp
+        run: node scripts/publish-chrome.mjs
       - name: Submit Firefox update to AMO
+        if: matrix.browser == 'firefox'
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
-        run: npx --yes web-ext@10.6.0 sign --source-dir dist/firefox --channel listed --approval-timeout 0
+        run: |
+          test -n "$WEB_EXT_API_KEY" || { echo "Missing AMO_JWT_ISSUER repository secret"; exit 1; }
+          test -n "$WEB_EXT_API_SECRET" || { echo "Missing AMO_JWT_SECRET repository secret"; exit 1; }
+          python3 -m zipfile -e dist/twitch-vod-muted-skipper-firefox.zip dist/firefox
+          npx --yes web-ext@10.6.0 sign --source-dir dist/firefox --channel listed --approval-timeout 0
