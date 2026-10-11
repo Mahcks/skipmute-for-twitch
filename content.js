@@ -40,6 +40,8 @@
     } catch {
       state.metadataError = "settings unavailable";
     }
+    // Firefox add-on reloads leave the old DOM behind with inactive click handlers.
+    document.getElementById("tvms-root")?.remove();
     createOverlay();
     attachOverlayToPlayer();
     watchUrlChanges();
@@ -154,7 +156,7 @@
     state.segments = normalizeSegments(result.segments);
     state.source = result.source;
     state.metadataError = result.error ?? null;
-    if (state.segments.length === 0) {
+    if (state.segments.length === 0 && state.source !== "graphql") {
       state.lastDomScanAt = 0;
       refreshSegmentsFromTimeline();
     }
@@ -168,7 +170,7 @@
       const result = await browserApi.runtime.sendMessage({ type: "tvms-load-muted-segments", videoId });
       return result?.ok ? result : { ok: true, source: "none", segments: [], error: result?.error ?? null };
     } catch {
-      return { ok: true, source: "none", segments: [], error: "official API unavailable" };
+      return { ok: true, source: "none", segments: [], error: "Twitch metadata unavailable" };
     }
   }
 
@@ -191,7 +193,7 @@
       resetSilenceConfirmation();
       return;
     }
-    if (state.segments.length === 0 || state.source === "timeline") {
+    if ((state.segments.length === 0 && state.source !== "graphql") || state.source === "timeline") {
       refreshSegmentsFromTimeline();
     }
     renderOverlay();
@@ -651,6 +653,7 @@
     const completedCount = getCompletedSegmentCount();
     const sourceLabel = {
       helix: "official API",
+      graphql: "Twitch metadata",
       timeline: `timeline markers${state.audioStatus ? `; ${state.audioStatus}` : ""}`,
       loading: "loading metadata",
       none: state.metadataError ?? "no muted metadata"

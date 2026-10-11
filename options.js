@@ -176,7 +176,7 @@ async function saveSettings(values) {
 
 function ensureAuthenticationPermission(token) {
   if (!token || !dataConsentSupported) return true;
-  return browserApi.permissions.request({ data_collection: ["authenticationInfo", "browsingActivity"] });
+  return browserApi.permissions.request({ data_collection: ["authenticationInfo"] });
 }
 
 async function hasAuthenticationPermission() {
@@ -190,7 +190,7 @@ async function clearAuthenticationPermission() {
   if (!browserApi.permissions?.getAll || !browserApi.permissions.remove) return;
   try {
     const permissions = await browserApi.permissions.getAll();
-    const dataCollection = ["authenticationInfo", "browsingActivity"]
+    const dataCollection = ["authenticationInfo"]
       .filter((type) => permissions.data_collection?.includes(type));
     if (dataCollection.length) {
       await browserApi.permissions.remove({ data_collection: dataCollection });

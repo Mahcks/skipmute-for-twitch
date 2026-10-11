@@ -146,37 +146,56 @@ test("normalizes segments and clamps persisted settings", () => {
 });
 
 test("metadata skip, Undo, and manual re-skip preserve the original destination", () => {
-  const runtime = loadContent();
-  const { api } = runtime;
-  const video = { currentTime: 10, duration: 100, paused: false, seeking: false, muted: false, volume: 1 };
-  setPlaybackState(api, video, "helix", [{ offset: 5, duration: 15, end: 20 }]);
+  for (const source of ["helix", "graphql"]) {
+    const runtime = loadContent();
+    const { api } = runtime;
+    const video = { currentTime: 10, duration: 100, paused: false, seeking: false, muted: false, volume: 1 };
+    setPlaybackState(api, video, source, [{ offset: 5, duration: 15, end: 20 }]);
+    video.captureStream = () => { throw new Error("Metadata must not require audio capture"); };
 
+    api.tick();
+    assert.equal(video.currentTime, 20.35);
+    assert.equal(api.state.lastSkip.from, 10);
+
+    api.undoLastSkip();
+    assert.equal(video.currentTime, 9.75);
+    assert.equal(api.state.ignoredSegmentRanges.length, 1);
+
+    video.currentTime = 20.35;
+    runtime.runTimeouts();
+    assert.equal(video.currentTime, 9.75);
+
+    video.currentTime = 12;
+    api.tick();
+    assert.equal(video.currentTime, 12);
+
+    api.skipManualWatchRange();
+    assert.equal(video.currentTime, 20.35);
+    assert.equal(api.state.manualSkipAction, null);
+    runtime.runTimeouts();
+    assert.equal(video.currentTime, 20.35);
+
+    api.state.manualWatchRange = { offset: 0, end: 5 };
+    api.state.manualSkipAction = { to: 10 };
+    assert.equal(api.isInManualWatchWindow(6), false);
+    assert.equal(api.state.manualSkipAction, null);
+  }
+});
+
+test("empty GraphQL metadata stays authoritative despite timeline markers", async () => {
+  const { api, context } = loadContent();
+  const video = { currentTime: 10, duration: 100, paused: false, seeking: false };
+  setPlaybackState(api, video, "graphql", []);
+  context.document.querySelector = (selector) => selector === "video" ? video : null;
+  let timelineReads = 0;
+  context.document.querySelectorAll = () => { timelineReads++; throw new Error("Must not scan markers"); };
+  context.browser.runtime = { sendMessage: async () => ({ ok: true, source: "graphql", segments: [] }) };
+  await api.hydrateForCurrentPage(true);
   api.tick();
-  assert.equal(video.currentTime, 20.35);
-  assert.equal(api.state.lastSkip.from, 10);
-
-  api.undoLastSkip();
-  assert.equal(video.currentTime, 9.75);
-  assert.equal(api.state.ignoredSegmentRanges.length, 1);
-
-  video.currentTime = 20.35;
-  runtime.runTimeouts();
-  assert.equal(video.currentTime, 9.75);
-
-  video.currentTime = 12;
-  api.tick();
-  assert.equal(video.currentTime, 12);
-
-  api.skipManualWatchRange();
-  assert.equal(video.currentTime, 20.35);
-  assert.equal(api.state.manualSkipAction, null);
-  runtime.runTimeouts();
-  assert.equal(video.currentTime, 20.35);
-
-  api.state.manualWatchRange = { offset: 0, end: 5 };
-  api.state.manualSkipAction = { to: 10 };
-  assert.equal(api.isInManualWatchWindow(6), false);
-  assert.equal(api.state.manualSkipAction, null);
+  assert.equal(api.state.source, "graphql");
+  assert.equal(api.state.segments.length, 0);
+  assert.equal(timelineReads, 0);
+  assert.equal(video.currentTime, 10);
 });
 
 test("timeline markers require nearby confirmed silence", () => {
@@ -525,17 +544,17 @@ test("background validates VOD IDs and enforces optional Firefox token consent",
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), context);
 
-  assert.equal((await context.__TVMS_TEST__.loadMutedSegments("bad")).error, "invalid VOD ID");
-  assert.equal(JSON.stringify(await context.__TVMS_TEST__.loadMutedSegments("123")), JSON.stringify({ ok: false, error: null }));
+  assert.equal((await context.__TVMS_TEST__.loadHelixMutedSegments("bad")).error, "invalid VOD ID");
+  assert.equal(JSON.stringify(await context.__TVMS_TEST__.loadHelixMutedSegments("123")), JSON.stringify({ ok: false, error: null }));
   assert.equal(requestedUrl, null);
 
   clientId = "client";
   token = "token";
-  assert.equal((await context.__TVMS_TEST__.loadMutedSegments("123")).error, "Allow API data access in settings");
+  assert.equal((await context.__TVMS_TEST__.loadHelixMutedSegments("123")).error, "Allow API data access in settings");
   assert.equal(requestedUrl, null);
 
   allowed = true;
-  const result = await context.__TVMS_TEST__.loadMutedSegments("123");
+  const result = await context.__TVMS_TEST__.loadHelixMutedSegments("123");
   assert.equal(result.ok, true);
   assert.equal(JSON.stringify(result.segments), JSON.stringify([{ offset: 5, duration: 3 }]));
   assert.match(requestedUrl, /videos\?id=123$/);
@@ -557,6 +576,7 @@ test("release manifests and assets stay aligned", () => {
   for (const file of ["manifest.json", "manifest.chrome.json"]) {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
     assert.equal(manifest.version, pkg.version);
+    assert.ok((manifest.host_permissions ?? manifest.permissions).includes("https://gql.twitch.tv/*"));
     assert.deepEqual(manifest.content_scripts[0].matches, ["https://www.twitch.tv/*"]);
     for (const script of manifest.content_scripts) {
       for (const asset of [...(script.js ?? []), ...(script.css ?? [])]) {
@@ -574,6 +594,6 @@ test("release manifests and assets stay aligned", () => {
   assert.equal(chrome.minimum_chrome_version, "99");
   assert.equal(firefox.browser_specific_settings.gecko.strict_min_version, "142.0");
   assert.equal("gecko_android" in firefox.browser_specific_settings, false);
-  assert.deepEqual(firefox.browser_specific_settings.gecko.data_collection_permissions.required, ["none"]);
-  assert.deepEqual(firefox.browser_specific_settings.gecko.data_collection_permissions.optional, ["authenticationInfo", "browsingActivity"]);
+  assert.deepEqual(firefox.browser_specific_settings.gecko.data_collection_permissions.required, ["browsingActivity"]);
+  assert.deepEqual(firefox.browser_specific_settings.gecko.data_collection_permissions.optional, ["authenticationInfo"]);
 });

@@ -28,11 +28,11 @@ async function loadCredentials() {
   };
 }
 
-async function requestJson(url, headers) {
+async function requestJson(url, headers, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetch(url, { headers, signal: controller.signal });
+    const response = await fetch(url, { ...options, headers, signal: controller.signal });
     return { status: response.status, ok: response.ok, payload: response.ok ? await response.json() : null };
   } catch {
     throw new Error(controller.signal.aborted ? "Twitch request timed out; try again" : "Twitch API unavailable; try again");
@@ -69,8 +69,51 @@ async function validateCredentials(clientId, token, force = false) {
   }
 }
 
-// Load optional official metadata without exposing credentials to the page script.
 async function loadMutedSegments(videoId) {
+  if (typeof videoId !== "string" || !/^\d+$/.test(videoId)) return { ok: false, error: "invalid VOD ID" };
+  if (!(await canUseApiData(["browsingActivity"]))) return { ok: false, error: "Allow API data access in settings" };
+  let metadataError;
+  try {
+    // Twitch's public web client identifier is not an account credential.
+    const response = await requestJson("https://gql.twitch.tv/gql", {
+      "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+      "Content-Type": "application/json"
+    }, {
+      method: "POST",
+      credentials: "omit",
+      body: JSON.stringify([{
+        operationName: "VideoPlayer_VODSeekbar",
+        variables: { includePrivate: false, vodID: videoId },
+        extensions: { persistedQuery: { version: 1, sha256Hash: "c67d32eba8f1c93b02e7efa6a278be46009e390ed5195c02dd0621e4c7ca14ac" } }
+      }])
+    });
+    if (!response.ok) throw new Error(`Twitch metadata returned ${response.status}`);
+    const result = response.payload?.[0];
+    const video = result?.data?.video;
+    if (result?.errors?.length || !video || video.id !== videoId ||
+        !Number.isFinite(video.lengthSeconds) || video.lengthSeconds <= 0 ||
+        !Object.hasOwn(video, "muteInfo")) throw new Error("VOD metadata unavailable");
+    // A null connection is Twitch's response for a VOD with no muted intervals.
+    const connection = video.muteInfo?.mutedSegmentConnection;
+    if (video.muteInfo != null && !Object.hasOwn(video.muteInfo, "mutedSegmentConnection")) {
+      throw new Error("Invalid Twitch muted metadata");
+    }
+    const segments = connection == null ? [] : connection.nodes;
+    if (!Array.isArray(segments) || segments.some((segment) => !segment ||
+        !Number.isFinite(segment.offset) || segment.offset < 0 ||
+        !Number.isFinite(segment.duration) || segment.duration <= 0 ||
+        segment.offset + segment.duration > video.lengthSeconds)) throw new Error("Invalid Twitch muted metadata");
+    if (!(await canUseApiData(["browsingActivity"]))) return { ok: false, error: "Allow API data access in settings" };
+    return { ok: true, source: "graphql", segments: segments.map(({ offset, duration }) => ({ offset, duration })) };
+  } catch (error) {
+    metadataError = error.message;
+  }
+  const fallback = await loadHelixMutedSegments(videoId);
+  return fallback.ok ? fallback : { ok: false, error: fallback.error ?? metadataError };
+}
+
+// Load optional official metadata without exposing credentials to the page script.
+async function loadHelixMutedSegments(videoId) {
   if (typeof videoId !== "string" || !/^\d+$/.test(videoId)) return { ok: false, error: "invalid VOD ID" };
   const { clientId, token } = await loadCredentials();
   if (!clientId || !token) return { ok: false, error: null };
@@ -98,11 +141,11 @@ async function loadMutedSegments(videoId) {
   }
 }
 
-async function canUseApiData() {
+async function canUseApiData(types = ["authenticationInfo", "browsingActivity"]) {
   if (!browserApi.permissions?.getAll) return true;
   const permissions = await browserApi.permissions.getAll();
   return !Array.isArray(permissions.data_collection) ||
-    ["authenticationInfo", "browsingActivity"].every((type) => permissions.data_collection.includes(type));
+    types.every((type) => permissions.data_collection.includes(type));
 }
 
 async function maintainCredentials() {
@@ -127,12 +170,12 @@ function handleMessage(message, sender, sendResponse) {
   } else if (message?.type === "tvms-migrate-credentials" && sender?.url === browserApi.runtime.getURL("options.html")) {
     request = migrateCredentials().then(() => ({ ok: true }));
   } else return;
-  request.then(sendResponse, () => sendResponse({ ok: false, error: "official API unavailable" }));
+  request.then(sendResponse, () => sendResponse({ ok: false, error: "Twitch metadata unavailable" }));
   return true;
 }
 
 if (globalThis.__TVMS_TEST__) {
-  Object.assign(globalThis.__TVMS_TEST__, { loadMutedSegments, handleMessage, migrateCredentials, validateCredentials, maintainCredentials });
+  Object.assign(globalThis.__TVMS_TEST__, { loadMutedSegments, loadHelixMutedSegments, handleMessage, migrateCredentials, validateCredentials, maintainCredentials });
 } else {
   browserApi.runtime.onMessage.addListener(handleMessage);
   browserApi.alarms.onAlarm.addListener((alarm) => {

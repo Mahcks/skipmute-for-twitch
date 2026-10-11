@@ -99,7 +99,8 @@ async function main() {
     await page.waitForFunction(end => document.querySelector("video").currentTime < end - 2, segment.end, { timeout: 5000 });
     await action.filter({ hasText: "Skip" }).click();
     await page.waitForFunction(end => document.querySelector("video").currentTime >= end, segment.end, { timeout: 5000 });
-    console.log(JSON.stringify({ check: "live-playback", vodUrl, skipUndoReskip: "passed", elapsedMs: Date.now() - started }));
+    console.log(JSON.stringify({ check: "live-playback", vodUrl, skipUndoReskip: "passed",
+      elapsedMs: Date.now() - started, metadataStatus: await control.getAttribute("title") }));
   } catch (error) {
     await page.screenshot({ path: "live-smoke-failure.png", fullPage: true }).catch(() => {});
     throw error;

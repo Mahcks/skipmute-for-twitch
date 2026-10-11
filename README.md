@@ -7,7 +7,7 @@ Browser extension for skipping Twitch VOD sections muted by Twitch Audio Recogni
 
 ![SkipMute automatically skipping a muted Twitch VOD section with Undo available](store-assets/chrome/01-auto-skip-undo.png)
 
-Works while logged out with no Client ID, token, or setup. By default, muted ranges are read from Twitch's seekbar and verified against captured playback audio locally in the page. Analysis does not reroute the player's sound.
+Works while logged out with no Client ID, token, or setup. By default, muted ranges come from the same anonymous GraphQL metadata query used by Twitch's VOD seekbar. No account cookies or OAuth token are sent with this query. Audio-confirmed timeline markers remain a fallback; analysis does not reroute the player's sound.
 
 ## Features
 
@@ -16,7 +16,7 @@ Works while logged out with no Client ID, token, or setup. By default, muted ran
 - Progress badge showing muted segments passed over total muted segments.
 - Undo after every automatic skip.
 - Skip action after Undo so long muted sections can be re-skipped when the user is ready.
-- Zero-setup, audio-confirmed timeline-marker detection.
+- Zero-setup Twitch muted metadata, with audio-confirmed timeline-marker fallback.
 - Optional official Twitch Helix API credentials.
 - Automatic recovery when Twitch rebuilds its player controls.
 
@@ -79,14 +79,17 @@ Outputs:
 
 The extension tries detection in this order:
 
-1. Official Twitch Helix API, if the user adds their own Client ID and OAuth bearer token.
-2. Twitch player timeline markers, confirmed against the playing audio before SkipMute seeks.
+1. Twitch GraphQL muted metadata, anonymously using the public web client identifier and `VideoPlayer_VODSeekbar` persisted query.
+2. Official Twitch Helix API, if the first query fails and the user has added their own Client ID and OAuth bearer token.
+3. Twitch player timeline markers, confirmed against the playing audio before SkipMute seeks.
+
+GraphQL is an undocumented Twitch endpoint: its query hash, response format, or access requirements may change. A successful response with no muted intervals is authoritative; it does not trigger timeline detection. The lookup sends the current VOD ID to Twitch once when metadata is loaded, with a 10-second timeout and no automatic retries. Firefox declares browsing-activity transmission as required; authentication-information consent is optional for the Helix fallback.
 
 Detection-source and credential changes apply to the open VOD without a page reload. API failures appear in the player control's tooltip.
 
 Timeline detection waits for uninterrupted, progressing silent playback within a recognized seekbar marker. Pausing, buffering, seeking, user mute, and zero volume cannot confirm silence. If audio capture is unavailable, SkipMute leaves playback alone and explains the limitation in the control's tooltip. Turning off automatic skipping also leaves playback under your control.
 
-To use the optional API, enter a matching Client ID and OAuth token in settings, then click **Save API credentials**. Firefox asks for consent from that click. Credentials are validated before saving and checked again at startup and hourly while configured and permitted. Invalid or mismatched credentials produce an explanation; timeline detection remains available. Legacy synced tokens migrate to local storage automatically, without opening settings.
+To use the optional API, enter a matching Client ID and OAuth token in settings, then click **Save API credentials**. Firefox asks for consent from that click. Credentials are validated before saving and checked again at startup and hourly while configured and permitted. Invalid or mismatched credentials produce an explanation; anonymous metadata and timeline detection remain available. Legacy synced tokens migrate to local storage automatically, without opening settings.
 
 ## Privacy
 
@@ -94,7 +97,7 @@ See [PRIVACY.md](PRIVACY.md). The extension does not collect analytics, run remo
 
 ## Automatic store publishing
 
-Publishing a **non-prerelease GitHub Release** triggers `.github/workflows/publish.yml`. CI checks that its tag is `v` plus the package version, runs unit/browser tests, builds and validates both ZIPs, and attaches them to the release. Independent Chrome and Firefox jobs then submit those exact ZIPs to the stores. Manual runs of **Publish Release** only check Chrome authentication and listing access; they do not build, upload, or publish. A failure in one store does not cancel the other.
+Publishing a **non-prerelease GitHub Release** triggers `.github/workflows/publish.yml`. CI checks that its tag is `v` plus the package version, runs unit/browser tests, builds and validates both ZIPs, and attaches them to the release. Independent Chrome and Firefox jobs then submit those exact ZIPs to the stores. The Chrome job waits for approval in the `chrome-web-store` environment before obtaining Google credentials. Manual runs of **Publish Release** only check Chrome authentication and listing access; they do not build, upload, or publish. A failure in one store does not cancel the other.
 
 Publishing submits the extension for store review; it does not bypass review or guarantee immediate availability. Chrome uses the v2 API with automatic publication after approval and supports short-lived GitHub OIDC credentials. [Chrome API publishing](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/publish), [Firefox submission reference](https://extensionworkshop.com/documentation/develop/web-ext-command-reference/#web-ext-sign).
 
@@ -142,8 +145,9 @@ The trust condition restricts access using this repository's and owner's numeric
 | `CWS_SERVICE_ACCOUNT` | The linked service-account email |
 | `CWS_PUBLISHER_ID` | Publisher ID from Chrome's **Publisher → Settings**; the existing repository secret with this name also works |
 
-5. After the workflow changes are on `main`, allow a few minutes for Google permissions to propagate. Open **Actions → Publish Release → Run workflow** on `main`. A successful run reports **Chrome access verified** without uploading or submitting anything. This confirms token creation, API availability, and access to this listing.
-6. Once the check passes, delete the unused `CWS_SERVICE_ACCOUNT_JSON` GitHub secret and revoke its old key in Google Cloud if no other integration uses it. Keyless runs already ignore that secret.
+5. Create a repository environment named `chrome-web-store`, require approval from `Mahcks`, disable administrator bypass, and allow only branch `main` and tags `v*`. Leave self-review allowed so the owner can approve their own releases. Protect `main` with reviewed pull requests for collaborators and require the code owner’s review for changes to the publishing workflow or `CODEOWNERS`. Restrict creation, updates, and deletion of `v*` tags to repository administrators. These repository settings protect the approval gate from changes by collaborators; repository administrators retain control of the settings.
+6. After the workflow changes are on `main`, allow a few minutes for Google permissions to propagate. Open **Actions → Publish Release → Run workflow** on `main`. Approve its pending environment deployment under **Review deployments**. A successful run reports **Chrome access verified** without uploading or submitting anything. This confirms token creation, API availability, and access to this listing.
+7. Once the check passes, delete the unused `CWS_SERVICE_ACCOUNT_JSON` GitHub secret and revoke its old key in Google Cloud if no other integration uses it. Keyless runs already ignore that secret.
 
 The Chrome extension ID is `joigloedgnkomhlekekfopbbeanlkcnp`. The publisher and linked service account must own that item. Release tags must match the package version, and each store update must use a higher version than the existing upload. Chrome's listing/privacy declarations still need to be maintained in the dashboard when behavior changes.
 

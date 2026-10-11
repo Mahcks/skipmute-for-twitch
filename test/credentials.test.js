@@ -44,7 +44,7 @@ test('background upgrades legacy credentials before metadata and preserves exist
   const synced = { helixClientId: 'client', helixToken: 'fixture-legacy' };
   const local = {};
   const { api } = background({ synced, local });
-  assert.equal((await api.loadMutedSegments('123')).ok, true);
+  assert.equal((await api.loadHelixMutedSegments('123')).ok, true);
   assert.equal(local.helixToken, 'fixture-legacy');
   assert.equal('helixToken' in synced, false);
   synced.helixToken = 'fixture-legacy';
@@ -76,12 +76,12 @@ test('validation blocks invalid/mismatched tokens and never sends video IDs with
       synced: { helixClientId: 'client' }, local: { helixToken: 'fixture' },
       fetcher: async () => ({ ok: status === 200, status, json: async () => payload })
     });
-    assert.match((await api.loadMutedSegments('123')).error, message);
+    assert.match((await api.loadHelixMutedSegments('123')).error, message);
     assert.equal(requests.length, 1);
     assert.ok(requests[0].includes('/validate'));
   }
   const denied = background({ synced: { helixClientId: 'client' }, local: { helixToken: 'fixture' }, consent: false });
-  assert.equal((await denied.api.loadMutedSegments('123')).ok, false);
+  assert.equal((await denied.api.loadHelixMutedSegments('123')).ok, false);
   assert.equal(denied.requests.length, 0);
 });
 
@@ -92,7 +92,7 @@ test('validation is refreshed hourly and alarms stop after consent removal', asy
   });
   await api.maintainCredentials();
   assert.equal(alarm().periodInMinutes, 60);
-  await api.loadMutedSegments('123');
+  await api.loadHelixMutedSegments('123');
   assert.equal(requests.filter((url) => url.includes('/validate')).length, 1);
   now += 3600001;
   await api.maintainCredentials();
@@ -235,7 +235,7 @@ test('revoking consent during validation prevents the following metadata request
       entered();
     }) })
   });
-  const loading = runtime.api.loadMutedSegments('123');
+  const loading = runtime.api.loadHelixMutedSegments('123');
   await ready;
   runtime.consent(false);
   release();
@@ -243,4 +243,89 @@ test('revoking consent during validation prevents the following metadata request
   assert.equal(runtime.requests.length, 1);
   assert.match((await runtime.api.validateCredentials('client', 'fixture')).error, /Allow API data access/);
   assert.equal(runtime.requests.length, 1);
+});
+
+function gqlVideo(nodes = [{ offset: 3062, duration: 180 }]) {
+  return [{ data: { video: { id: '123', lengthSeconds: 21682,
+    muteInfo: { mutedSegmentConnection: nodes === null ? null : { nodes } } } } }];
+}
+
+test('anonymous GraphQL metadata needs only browsing consent and never sends account credentials', async () => {
+  let sent;
+  const runtime = background({ synced: { helixClientId: 'private-client' }, local: { helixToken: 'private-token' },
+    fetcher: async (url, options) => {
+      sent = { url, ...options };
+      return { ok: true, status: 200, json: async () => gqlVideo() };
+    } });
+  runtime.browser.permissions.getAll = async () => ({ data_collection: ['browsingActivity'] });
+  const result = await runtime.api.loadMutedSegments('123');
+  assert.equal(result.source, 'graphql');
+  assert.equal(JSON.stringify(result.segments), JSON.stringify([{ offset: 3062, duration: 180 }]));
+  assert.equal(runtime.requests.length, 1);
+  assert.equal(sent.url, 'https://gql.twitch.tv/gql');
+  assert.equal(sent.method, 'POST');
+  assert.equal(sent.credentials, 'omit');
+  assert.equal(sent.headers.Authorization, undefined);
+  assert.equal(JSON.stringify(sent).includes('private-token'), false);
+  const [query] = JSON.parse(sent.body);
+  assert.equal(query.operationName, 'VideoPlayer_VODSeekbar');
+  assert.deepEqual(query.variables, { includePrivate: false, vodID: '123' });
+  assert.equal(query.extensions.persistedQuery.sha256Hash.length, 64);
+});
+
+test('GraphQL accepts empty and null connections without attempting fallback', async () => {
+  for (const nodes of [[], null]) {
+    const runtime = background({ fetcher: async () => ({ ok: true, status: 200, json: async () => gqlVideo(nodes) }) });
+    const result = await runtime.api.loadMutedSegments('123');
+    assert.equal(result.source, 'graphql');
+    assert.equal(result.segments.length, 0);
+    assert.equal(runtime.requests.length, 1);
+  }
+});
+
+test('GraphQL failures and malformed ranges fall back to configured Helix, otherwise timeline', async () => {
+  const wrongId = gqlVideo(); wrongId[0].data.video.id = '999';
+  const missingConnection = gqlVideo(); missingConnection[0].data.video.muteInfo = {};
+  const invalidLength = gqlVideo(); invalidLength[0].data.video.lengthSeconds = null;
+  for (const payload of [
+    [{ errors: [{ message: 'PersistedQueryNotFound' }] }], [{ data: { video: null } }],
+    wrongId, missingConnection, invalidLength, gqlVideo([{ offset: -1, duration: 180 }]),
+    gqlVideo([{ offset: 21680, duration: 180 }]), gqlVideo([{ offset: 3, duration: '180' }]),
+    gqlVideo({ offset: 3, duration: 180 }), null
+  ]) {
+    const fetcher = async (url) => ({ ok: true, status: 200, json: async () => url.includes('gql.') ? payload
+      : url.includes('/validate') ? { client_id: 'client', expires_in: 3600 }
+      : { data: [{ muted_segments: [{ offset: 5, duration: 3 }] }] } });
+    const configured = background({ synced: { helixClientId: 'client' }, local: { helixToken: 'fixture' }, fetcher });
+    assert.equal((await configured.api.loadMutedSegments('123')).source, 'helix');
+    const anonymous = background({ fetcher });
+    const result = await anonymous.api.loadMutedSegments('123');
+    assert.equal(result.ok, false);
+    assert.ok(result.error);
+    assert.equal(anonymous.requests.length, 1);
+  }
+  for (const fetcher of [async () => { throw new Error('offline'); },
+    async () => ({ ok: false, status: 429 })]) {
+    const runtime = background({ fetcher });
+    assert.equal((await runtime.api.loadMutedSegments('123')).ok, false);
+    assert.equal(runtime.requests.length, 1);
+  }
+});
+
+test('anonymous metadata validates VOD ID and consent before any request', async () => {
+  const runtime = background({ consent: false });
+  assert.equal((await runtime.api.loadMutedSegments('bad')).error, 'invalid VOD ID');
+  assert.equal((await runtime.api.loadMutedSegments('123')).ok, false);
+  assert.equal(runtime.requests.length, 0);
+});
+
+test('removing Helix consent preserves required browsing consent for anonymous metadata', async () => {
+  let removed;
+  const context = { __TVMS_TEST__: {}, browser: { permissions: {
+    getAll: async () => ({ data_collection: ['authenticationInfo', 'browsingActivity'] }),
+    remove: async (request) => { removed = request; }
+  } } };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'options.js'), 'utf8'), context);
+  await context.__TVMS_TEST__.clearAuthenticationPermission();
+  assert.equal(JSON.stringify(removed), JSON.stringify({ data_collection: ['authenticationInfo'] }));
 });

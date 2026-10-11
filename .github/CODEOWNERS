@@ -1,0 +1,3 @@
+# Changes to the publishing approval gate require the repository owner's review.
+/.github/workflows/publish.yml @Mahcks
+/.github/CODEOWNERS @Mahcks

@@ -38,14 +38,20 @@ document.addEventListener("seeking", event=>window.seeks.push(event.target.curre
 async function main() {
   const extension = fs.mkdtempSync(path.join(os.tmpdir(), "skipmute-browser-"));
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.chrome.json"), "utf8"));
-  // Exercise Chromium's isolated extension world; only the fixture host match changes.
+  // Exercise Chromium's isolated extension world against the local fixture host.
   manifest.content_scripts[0].matches = ["http://127.0.0.1/*"];
+  manifest.host_permissions.push("http://127.0.0.1/*");
   for (const file of ["background.js", "content.js", "content.css", "options.html", "options.css", "options.js", "icons"]) {
     fs.cpSync(path.join(root, file), path.join(extension, file), { recursive: true });
   }
   fs.writeFileSync(path.join(extension, "manifest.json"), JSON.stringify(manifest));
   let configureScript = "";
   const server = http.createServer((req, res) => {
+    if (req.url === "/gql") {
+      res.writeHead(503);
+      res.end();
+      return;
+    }
     if (req.url === "/media.wav") {
       const range = req.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
       const start = range ? Number(range[1]) : 0;
@@ -61,6 +67,9 @@ async function main() {
     res.end(body);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  // Keep timeline regression fixtures independent of Twitch's metadata service.
+  fs.writeFileSync(path.join(extension, "background.js"), fs.readFileSync(path.join(root, "background.js"), "utf8")
+    .replace("https://gql.twitch.tv/gql", `http://127.0.0.1:${server.address().port}/gql`));
   try {
     for (const [name, engine] of Object.entries({ chromium, firefox })) {
       // Silence browser output, preserving media volume and analyser samples.
@@ -71,8 +80,8 @@ async function main() {
       const errors = [];
       page.on("pageerror", error => errors.push(error.message));
       const result = { browser: name, noSkipCases: 0, expectedSkipCases: 0, falseSkips: 0, missedSkips: 0, skipLatencyMs: [] };
-      const fresh = async (configure = () => {}) => {
-        configureScript = `(${configure.toString()})();`;
+      const fresh = async (configure = () => {}, staleOverlay = "") => {
+        configureScript = `document.body.insertAdjacentHTML("beforeend", ${JSON.stringify(staleOverlay)}); (${configure.toString()})();`;
         await page.goto(`http://127.0.0.1:${server.address().port}/videos/123`);
         await page.waitForFunction(() => document.querySelector("video").readyState >= 3);
         if (name === "firefox") await page.addScriptTag({ url: "/content.js" });
@@ -103,7 +112,14 @@ async function main() {
         await noSkip("red decoration outside timeline", () => { document.querySelector(".player").append(document.querySelector(".marker")); });
         await noSkip("cross-origin audible audio cannot be verified", () => { document.querySelector("video").src = `http://localhost:${location.port}/media.wav`; const marker = document.querySelector(".marker"); marker.style.left = "0%"; marker.style.width = "55%"; }, 1);
 
-        await fresh();
+        // Add-on reloads can leave a visible control whose original handlers are gone.
+        const staleOverlay = await page.locator("#tvms-root").evaluate(root => {
+          const clone = root.cloneNode(true);
+          clone.dataset.staleControl = "true";
+          return clone.outerHTML;
+        });
+        await fresh(() => {}, staleOverlay);
+        assert.equal(await page.locator("[data-stale-control]").count(), 0, `${name}: stale control must be replaced`);
         await playAt(8.2);
         const started = Date.now();
         try { await page.waitForFunction(() => document.querySelector("video").currentTime >= 22, null, { timeout: 8000 }); }

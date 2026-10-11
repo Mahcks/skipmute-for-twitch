@@ -16,11 +16,11 @@ Skip Twitch VOD sections muted by audio recognition, with undo and manual re-ski
 
 SkipMute for Twitch adds a compact control to Twitch VOD players and automatically skips sections that Twitch has muted because of audio recognition.
 
-No Twitch login, Client ID, token, or setup is required. The default timeline mode works for logged-out viewers and keeps detection local to the page.
+No Twitch login, Client ID, token, or setup is required. The default lookup reads Twitch's muted VOD metadata anonymously, without account cookies or credentials.
 
 Features:
 
-- Detects muted VOD sections from the official Twitch API or audio-confirmed timeline markers.
+- Detects muted VOD sections from Twitch's GraphQL metadata, the optional official API, or audio-confirmed timeline markers.
 - Skips muted sections automatically when playback reaches them.
 - Shows skipped/passed muted segment progress.
 - Provides Undo after every automatic skip.
@@ -39,12 +39,13 @@ SkipMute for Twitch is not affiliated with or endorsed by Twitch.
 - `storage`: saves user settings.
 - `alarms`: revalidates optional API credentials hourly while configured and permitted.
 - `https://www.twitch.tv/*`: reads Twitch VOD player state and injects the player control.
+- `https://gql.twitch.tv/*`: anonymous muted metadata lookup using the current VOD ID.
 - `https://api.twitch.tv/*`: optional official Twitch Helix metadata lookup when the user provides their own Twitch API credentials.
 - `https://id.twitch.tv/*`: validates the optional OAuth token during setup, startup, and scheduled checks.
 
 ## Firefox data collection disclosure
 
-The Firefox manifest declares no required data transmission. It declares optional `authenticationInfo` and `browsingActivity` because, only when a user configures the Helix integration and grants consent, the extension sends the user-provided token and current VOD ID to Twitch. The extension developer does not receive or store this data.
+The Firefox manifest declares required `browsingActivity` because the default anonymous GraphQL lookup sends the current VOD ID to Twitch. It declares optional `authenticationInfo` for user-provided Helix credentials, which are sent only after consent. No account cookies or credentials are sent with GraphQL requests. The extension developer does not receive or store this data.
 
 ## Store screenshots
 
