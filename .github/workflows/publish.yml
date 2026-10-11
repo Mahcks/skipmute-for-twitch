@@ -3,6 +3,8 @@ name: Publish Release
 on:
   release:
     types: [published]
+  # Manual runs verify Chrome access without uploading or publishing.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ !github.event.release.prerelease }}
+    if: ${{ github.event_name == 'release' && !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -45,33 +47,75 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" dist/twitch-vod-muted-skipper-{firefox,chrome}.zip --clobber
 
-  stores:
+  chrome:
     needs: build
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.build.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        browser: [chrome, firefox]
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID || secrets.CWS_PUBLISHER_ID }}
+      CWS_EXTENSION_ID: joigloedgnkomhlekekfopbbeanlkcnp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-      - name: Download verified release package
+      - name: Check keyless authentication configuration
+        env:
+          PROVIDER: ${{ vars.CWS_WORKLOAD_IDENTITY_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.CWS_SERVICE_ACCOUNT }}
+        run: |
+          if { test -n "$PROVIDER" && test -z "$SERVICE_ACCOUNT"; } || { test -z "$PROVIDER" && test -n "$SERVICE_ACCOUNT"; }; then
+            echo "Set both CWS_WORKLOAD_IDENTITY_PROVIDER and CWS_SERVICE_ACCOUNT repository variables"
+            exit 1
+          fi
+      - name: Authenticate to Google without a JSON key
+        if: vars.CWS_WORKLOAD_IDENTITY_PROVIDER != ''
+        id: google-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.CWS_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.CWS_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          access_token_lifetime: 1800s
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Download verified Chrome release package
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-          BROWSER: ${{ matrix.browser }}
-        run: gh release download "$GITHUB_REF_NAME" --pattern "twitch-vod-muted-skipper-${BROWSER}.zip" --dir dist
-      - name: Submit Chrome update
-        if: matrix.browser == 'chrome'
+        run: gh release download "$GITHUB_REF_NAME" --pattern "twitch-vod-muted-skipper-chrome.zip" --dir dist
+      - name: Verify Chrome access or submit release
         env:
-          CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
-          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID || secrets.CWS_PUBLISHER_ID }}
-          CWS_EXTENSION_ID: joigloedgnkomhlekekfopbbeanlkcnp
-        run: node scripts/publish-chrome.mjs
+          CWS_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          # Existing key-based setups remain supported during migration.
+          CWS_SERVICE_ACCOUNT_JSON: ${{ vars.CWS_WORKLOAD_IDENTITY_PROVIDER == '' && secrets.CWS_SERVICE_ACCOUNT_JSON || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if test "$EVENT_NAME" = "workflow_dispatch"; then
+            node scripts/publish-chrome.mjs --check
+          else
+            node scripts/publish-chrome.mjs
+          fi
+
+  firefox:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Download verified Firefox release package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$GITHUB_REF_NAME" --pattern "twitch-vod-muted-skipper-firefox.zip" --dir dist
       - name: Submit Firefox update to AMO
-        if: matrix.browser == 'firefox'
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}

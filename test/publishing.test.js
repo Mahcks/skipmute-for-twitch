@@ -55,6 +55,47 @@ test("Chrome publishing signs OAuth correctly and publishes only after a success
     }
     if (outcome === "timeout") assert.equal(polls, 30);
   }
-  await assert.rejects(publishChrome({}, zip), /Missing CWS_SERVICE_ACCOUNT_JSON/);
+  await assert.rejects(publishChrome({}, zip), /Missing CWS_PUBLISHER_ID/);
   await assert.rejects(publishChrome({ ...env, CWS_SERVICE_ACCOUNT_JSON: "invalid" }, zip), /complete service-account JSON/);
+});
+
+test("short-lived Chrome tokens bypass JSON keys and the access check cannot publish", async () => {
+  const { checkChromeAccess, publishChrome } = await import("../scripts/publish-chrome.mjs");
+  const env = { CWS_ACCESS_TOKEN: "short-lived-token", CWS_SERVICE_ACCOUNT_JSON: "old malformed key",
+    CWS_PUBLISHER_ID: "publisher-id", CWS_EXTENSION_ID: "joigloedgnkomhlekekfopbbeanlkcnp" };
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push({ url, options });
+    assert.equal(options.headers.Authorization, "Bearer short-lived-token");
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.ok(!url.includes("oauth2.googleapis.com"));
+    return { ok: true, json: async () => url.endsWith(":fetchStatus")
+      ? { itemId: env.CWS_EXTENSION_ID, publishedItemRevisionStatus: { state: "PUBLISHED" } }
+      : url.endsWith(":upload") ? { uploadState: "SUCCEEDED" } : { state: "PENDING_REVIEW" } };
+  };
+  assert.equal((await checkChromeAccess(env, fetcher)).publishedItemRevisionStatus.state, "PUBLISHED");
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith(":fetchStatus"));
+  assert.equal(calls[0].options.method ?? "GET", "GET");
+  assert.equal(calls[0].options.body, undefined);
+  calls.length = 0;
+  assert.equal((await publishChrome(env, Buffer.from("zip"), fetcher)).state, "PENDING_REVIEW");
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].url.endsWith(":upload"));
+  assert.ok(calls[1].url.endsWith(":publish"));
+});
+
+test("Chrome access failures give useful guidance without logging token or response bodies", async () => {
+  const { checkChromeAccess } = await import("../scripts/publish-chrome.mjs");
+  const env = { CWS_ACCESS_TOKEN: "secret-token", CWS_PUBLISHER_ID: "publisher", CWS_EXTENSION_ID: "joigloedgnkomhlekekfopbbeanlkcnp" };
+  for (const [status, hint] of [[401, /invalid or expired/], [403, /link this service account/], [404, /CWS_PUBLISHER_ID/]]) {
+    await assert.rejects(checkChromeAccess(env, async () => ({ ok: false, status,
+      json: () => { throw new Error("Must not read a credential-bearing error body"); } })), error => {
+      assert.match(error.message, hint);
+      assert.ok(!error.message.includes("secret-token"));
+      return true;
+    });
+  }
+  await assert.rejects(checkChromeAccess({ ...env, CWS_EXTENSION_ID: "invalid" }), /Invalid CWS_EXTENSION_ID/);
+  await assert.rejects(checkChromeAccess({ ...env, CWS_ACCESS_TOKEN: "" }), /Missing Chrome authentication/);
 });

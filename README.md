@@ -94,20 +94,66 @@ See [PRIVACY.md](PRIVACY.md). The extension does not collect analytics, run remo
 
 ## Automatic store publishing
 
-Publishing a **non-prerelease GitHub Release** triggers `.github/workflows/publish.yml`. CI checks that its tag is `v` plus the package version, runs unit/browser tests, builds and validates both ZIPs, and attaches them to the release. Independent Chrome and Firefox jobs then submit those exact ZIPs to the stores. A failure in one store does not cancel the other.
+Publishing a **non-prerelease GitHub Release** triggers `.github/workflows/publish.yml`. CI checks that its tag is `v` plus the package version, runs unit/browser tests, builds and validates both ZIPs, and attaches them to the release. Independent Chrome and Firefox jobs then submit those exact ZIPs to the stores. Manual runs of **Publish Release** only check Chrome authentication and listing access; they do not build, upload, or publish. A failure in one store does not cancel the other.
 
-Publishing submits the extension for store review; it does not bypass review or guarantee immediate availability. Chrome uses the v2 API with automatic publication after approval. [Chrome API publishing](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/publish), [Firefox submission reference](https://extensionworkshop.com/documentation/develop/web-ext-command-reference/#web-ext-sign).
+Publishing submits the extension for store review; it does not bypass review or guarantee immediate availability. Chrome uses the v2 API with automatic publication after approval and supports short-lived GitHub OIDC credentials. [Chrome API publishing](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/publish), [Firefox submission reference](https://extensionworkshop.com/documentation/develop/web-ext-command-reference/#web-ext-sign).
 
-### One-time Chrome setup
+### One-time Chrome setup without a JSON key
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), select/create a project and enable **Chrome Web Store API**.
-2. Create a **service account** under IAM & Admin → Service Accounts. No project roles are needed for the direct JWT authentication used here.
-3. In the [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole), open **Account** and add that service account's email address.
-4. In Google Cloud, open that service account → **Keys → Add key → Create new key → JSON**.
-5. In this GitHub repository → **Settings → Secrets and variables → Actions**, add a repository secret named `CWS_SERVICE_ACCOUNT_JSON` containing the complete JSON key.
-6. Copy the **Publisher ID** from the store dashboard's **Publisher → Settings**. Add it as a repository **variable** named `CWS_PUBLISHER_ID` (use the Variables tab). A repository secret with the same name also works; if both exist, the variable takes precedence.
+The recommended route uses GitHub OIDC and Google Workload Identity Federation through a service account. GitHub obtains a short-lived token for each run; no JSON private key or OAuth refresh token is needed. [Google authentication action](https://github.com/google-github-actions/auth), [Chrome service-account authentication](https://developer.chrome.com/docs/webstore/service-accounts).
 
-The workflow already targets this extension's Chrome item ID, `joigloedgnkomhlekekfopbbeanlkcnp`. The service account must belong to the publisher that owns that item. [Official service-account setup](https://developer.chrome.com/docs/webstore/service-accounts), [finding your publisher ID](https://developer.chrome.com/docs/webstore/using-api#obtain_your_publisher_id).
+1. Select the Google Cloud project used for publishing. Find the existing service account under **IAM & Admin → Service Accounts**, or create one without project roles.
+2. In the [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole), open **Account** and link that service account's email. Chrome currently permits one linked service account per publisher, so reuse the existing one when applicable.
+3. Open [Google Cloud Shell](https://shell.cloud.google.com/) and run the following once, using the SkipMute project and linked service account below. This creates the GitHub identity pool/provider and permits this repository's publishing workflow to impersonate the linked account.
+
+```sh
+CWS_PROJECT_ID='skipmute'
+CWS_SERVICE_ACCOUNT='skipmute-publisher@skipmute.iam.gserviceaccount.com'
+CWS_PROJECT_NUMBER="$(gcloud projects describe "$CWS_PROJECT_ID" --format='value(projectNumber)')"
+
+gcloud services enable chromewebstore.googleapis.com iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com \
+  --project="$CWS_PROJECT_ID"
+
+gcloud iam workload-identity-pools create skipmute-github \
+  --project="$CWS_PROJECT_ID" --location=global --display-name='SkipMute GitHub'
+
+gcloud iam workload-identity-pools providers create-oidc skipmute-publish \
+  --project="$CWS_PROJECT_ID" --location=global --workload-identity-pool=skipmute-github \
+  --issuer-uri='https://token.actions.githubusercontent.com' \
+  --attribute-mapping='google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id,attribute.event_name=assertion.event_name,attribute.ref=assertion.ref,attribute.workflow_ref=assertion.workflow_ref' \
+  --attribute-condition="assertion.repository_id == '1318724308' && assertion.repository_owner_id == '7705550' && ((assertion.event_name == 'release' && assertion.ref.startsWith('refs/tags/v') && assertion.workflow_ref.startsWith('Mahcks/skipmute-for-twitch/.github/workflows/publish.yml@refs/tags/v')) || (assertion.event_name == 'workflow_dispatch' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'Mahcks/skipmute-for-twitch/.github/workflows/publish.yml@refs/heads/main'))"
+
+gcloud iam service-accounts add-iam-policy-binding "$CWS_SERVICE_ACCOUNT" \
+  --project="$CWS_PROJECT_ID" --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$CWS_PROJECT_NUMBER/locations/global/workloadIdentityPools/skipmute-github/attribute.repository_id/1318724308"
+
+gcloud iam workload-identity-pools providers describe skipmute-publish \
+  --project="$CWS_PROJECT_ID" --location=global --workload-identity-pool=skipmute-github \
+  --format='value(name)'
+```
+
+The trust condition restricts access using this repository's and owner's numeric IDs, this workflow's path, and either a version-tag release or a manual check on `main`. If you rename or transfer the repository, update the condition. [Google deployment-pipeline setup](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines).
+
+4. Under repository **Settings → Secrets and variables → Actions → Variables**, set:
+
+| Variable | Value |
+| --- | --- |
+| `CWS_WORKLOAD_IDENTITY_PROVIDER` | The full `projects/.../locations/global/workloadIdentityPools/skipmute-github/providers/skipmute-publish` value printed above |
+| `CWS_SERVICE_ACCOUNT` | The linked service-account email |
+| `CWS_PUBLISHER_ID` | Publisher ID from Chrome's **Publisher → Settings**; the existing repository secret with this name also works |
+
+5. After the workflow changes are on `main`, allow a few minutes for Google permissions to propagate. Open **Actions → Publish Release → Run workflow** on `main`. A successful run reports **Chrome access verified** without uploading or submitting anything. This confirms token creation, API availability, and access to this listing.
+6. Once the check passes, delete the unused `CWS_SERVICE_ACCOUNT_JSON` GitHub secret and revoke its old key in Google Cloud if no other integration uses it. Keyless runs already ignore that secret.
+
+The Chrome extension ID is `joigloedgnkomhlekekfopbbeanlkcnp`. The publisher and linked service account must own that item. Release tags must match the package version, and each store update must use a higher version than the existing upload. Chrome's listing/privacy declarations still need to be maintained in the dashboard when behavior changes.
+
+Existing key-based configurations remain supported when both keyless variables are absent. To repair that route, upload the downloaded service-account key file directly rather than copying/reformatting its JSON:
+
+```sh
+gh secret set CWS_SERVICE_ACCOUNT_JSON --repo Mahcks/skipmute-for-twitch < /path/to/downloaded-service-account-key.json
+```
+
+Never paste a private key into chat or commit it to the repository. The previous Chrome run failed locally because the saved value was not a complete service-account key; Google authentication was never attempted. The keyless route avoids that formatting problem entirely.
 
 ### Firefox credentials
 
