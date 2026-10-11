@@ -2,14 +2,23 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 
 // External canary; replace with an owned muted Highlight if the broadcaster removes it.
-const vodUrl = process.env.LIVE_SMOKE_VOD_URL ?? "https://www.twitch.tv/videos/1766753076";
+const vodUrl = process.env.LIVE_SMOKE_VOD_URL || "https://www.twitch.tv/videos/2484712193";
 if (!/^https:\/\/www\.twitch\.tv\/videos\/\d+(?:[?#].*)?$/.test(vodUrl)) throw new Error("LIVE_SMOKE_VOD_URL must be a Twitch VOD URL");
+
+function getVodStatus() {
+  if (document.body?.innerText.includes("that content is unavailable")) return "unavailable";
+  const video = document.querySelector("video");
+  // Twitch briefly creates a video even when the VOD has been removed.
+  return video?.readyState >= 3 && Number.isFinite(video.duration) && video.duration > 0
+    ? "playable" : null;
+}
 
 async function main() {
   const extensionPath = path.resolve("dist/chrome");
   const context = await chromium.launchPersistentContext("", {
     channel: "chromium",
     headless: true,
+    locale: "en-US",
     viewport: { width: 1280, height: 800 },
     args: [
       "--mute-audio",
@@ -23,8 +32,12 @@ async function main() {
   try {
     await page.goto(vodUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
 
+    const status = await page.waitForFunction(getVodStatus, null, { timeout: 60_000 });
+    if (await status.jsonValue() === "unavailable") {
+      throw new Error(`Twitch VOD is unavailable: ${vodUrl}. Set LIVE_SMOKE_VOD_URL to a playable VOD with a muted interval.`);
+    }
+
     const video = page.locator("video").first();
-    await video.waitFor({ state: "attached", timeout: 60_000 });
     const box = await video.boundingBox();
     if (!box) throw new Error("Twitch video is not visible");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height - 20);
@@ -95,7 +108,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+module.exports = { getVodStatus };
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

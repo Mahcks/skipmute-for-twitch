@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "17 13 * * *"
   workflow_dispatch:
+    inputs:
+      vod_url:
+        description: Twitch VOD URL with a muted interval (overrides the repository variable)
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -21,6 +26,8 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: node scripts/live-smoke.cjs
+        env:
+          LIVE_SMOKE_VOD_URL: ${{ inputs.vod_url || vars.LIVE_SMOKE_VOD_URL }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

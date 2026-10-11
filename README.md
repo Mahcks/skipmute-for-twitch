@@ -57,7 +57,7 @@ The browser suite uses generated media with known audible and silent intervals. 
 
 On headless Linux, Firefox needs a running audio server for Web Audio analysis. Both CI workflows start PulseAudio with a silent virtual output device before running browser tests.
 
-For the separate live Twitch playback check, package Chrome and run `node scripts/live-smoke.cjs`. Set `LIVE_SMOKE_VOD_URL` to another Twitch VOD with a muted interval if the default canary is removed. This check needs Twitch and its media servers to be reachable.
+For the separate live Twitch playback check, package Chrome and run `node scripts/live-smoke.cjs`. The default canary is a public Highlight with a muted interval. It can still be deleted by its broadcaster; unavailable content fails with an explicit error. Set `LIVE_SMOKE_VOD_URL` to another playable Twitch VOD with a muted interval at least 10 seconds long if it is removed. For scheduled GitHub runs, set the repository Actions variable `LIVE_SMOKE_VOD_URL`; manual Live Smoke runs also accept a `vod_url` input, which takes priority. This check needs Twitch and its media servers to be reachable.
 
 ## Packaging
 
